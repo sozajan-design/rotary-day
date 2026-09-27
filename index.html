@@ -33,7 +33,7 @@
 
     // 若您沿用既有 GAS「管理部署 → 編輯 → 新版本」，Web App 網址不會改變。
     const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbwTBjHVnzYJW53_inuVIaMJ0JZYpChnKsHJQkAmTB9uvV8BQPBuVTcSxN67TycpDkt8/exec";
-    const APP_VERSION = "v1.5.4";
+    const APP_VERSION = "v1.5.5";
     const USER_TOKEN_KEY = "huimin_rotaryday_user_token";
     const ADMIN_TOKEN_KEY = "huimin_rotaryday_admin_token";
     const USER_PROFILE_CACHE_KEY = "huimin_rotaryday_user_profile";
@@ -738,7 +738,7 @@
 
         <section className="mt-6">
           {focusOrderId&&<div className="mb-4 rounded-2xl border-2 border-amber-200 bg-amber-50 p-4 text-amber-800"><div className="font-black text-lg">🎁 票券分配管理</div><div className="text-sm mt-1 leading-6">請在下方找到您的票券，按「指定給誰」登記受贈人；之後就不怕忘記每張票送給哪一位親友。</div></div>}
-          <div className="flex items-center justify-between mb-3"><h2 className="font-black text-2xl sm:text-lg">我的訂單</h2><button onClick={refresh} className="px-4 py-2 rounded-2xl bg-white border text-base sm:text-xs font-bold text-[#5B3F8C]">更新</button></div>
+          <div className="flex items-center justify-between mb-3"><h2 className="font-black text-2xl sm:text-lg">我的訂單</h2><button onClick={refresh} className="px-4 py-2 rounded-2xl bg-white border text-base sm:text-xs font-bold text-[#5B3F8C]">訂單狀態更新</button></div>
           {!orders.length ? <div className="bg-white rounded-[1.6rem] p-7 text-center text-slate-400 text-base sm:text-sm soft-card">目前沒有訂單</div> : <div className="space-y-4">
             {orders.map(o=>{ const sm=statusMap[o.status]||[o.status,"bg-slate-100"]; return <div id={`order-${o.orderId}`} key={o.orderId} className="bg-white rounded-[1.8rem] border border-slate-100 p-5 soft-card shadow-sm">
               <div className="flex justify-between gap-3"><div><div className="font-mono text-xs text-slate-400">{o.orderId}</div><div className="font-black mt-1">{o.quantity} 張 · {money(o.totalAmount)}</div><div className="text-sm sm:text-xs text-slate-400 mt-1">{o.identity}{o.club?` · ${o.club}`:""}</div></div><span className={`h-fit text-[11px] font-black px-3 py-1.5 rounded-full ${sm[1]}`}>{sm[0]}</span></div>
@@ -860,6 +860,7 @@
       const manageMode=params.get("manage")==="1";
       const manageOrderId=params.get("order")||"";
       const magicToken=params.get("magic");
+      const accountLinkToken=params.get("account");
 
       const storedToken = getStoredUserToken();
       const cachedUser = storedToken ? readJson(USER_PROFILE_CACHE_KEY, null) : null;
@@ -867,8 +868,8 @@
 
       const [config,setConfig]=useState(cachedConfig);
       const [user,setUser]=useState(cachedUser);
-      const [checking,setChecking]=useState(!cachedUser && !ticketId && !adminMode && !magicToken);
-      const [magicChecking,setMagicChecking]=useState(!!magicToken);
+      const [checking,setChecking]=useState(!cachedUser && !ticketId && !adminMode && !magicToken && !accountLinkToken);
+      const [magicChecking,setMagicChecking]=useState(!!magicToken || !!accountLinkToken);
       const [magicError,setMagicError]=useState("");
 
       async function refreshConfig(){
@@ -883,6 +884,52 @@
       useEffect(()=>{refreshConfig()},[]);
       useEffect(()=>{
         if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
+      },[]);
+
+      // 票券 Email 完整帳號一鍵登入：不用再次寄驗證信。
+      // 若這個瀏覽器本來就有有效的一年期 Session，直接沿用；否則用 Email 中的一次性安全 Token 建立完整帳號 Session。
+      useEffect(()=>{
+        if(!accountLinkToken) return;
+        let active=true;
+        setMagicChecking(true);
+        setMagicError("");
+
+        const cleanAccountUrl=()=>{
+          try {
+            const q=new URLSearchParams();
+            q.set("manage","1");
+            if(manageOrderId) q.set("order",manageOrderId);
+            history.replaceState({}, "", location.pathname + "?" + q.toString());
+          } catch(e) {}
+        };
+
+        (async()=>{
+          const existing=getStoredUserToken();
+          try{
+            // 優先兌換 Email 裡的一次性 Token；成功後立即失效，並建立新的 365 天完整帳號 Session。
+            const r=await api("verify_account_email_link",{accountToken:accountLinkToken});
+            if(!active) return;
+            persistUserSession(r.sessionToken,r.user);
+            setUser(r.user);
+            cleanAccountUrl();
+          }catch(e){
+            // 如果這封信的按鈕已經按過，但這台瀏覽器本身仍有有效的一年期登入，就直接沿用，不再要求 Email 驗證。
+            if(existing){
+              try{
+                const me=await apiWithRetry("session_me",{sessionToken:existing},1);
+                if(!active) return;
+                persistUserSession(existing,me.user);
+                setUser(me.user);
+                cleanAccountUrl();
+                return;
+              }catch(ignore){}
+            }
+            if(active) setMagicError(e.message || "一鍵登入連結驗證失敗");
+          }finally{
+            if(active) setMagicChecking(false);
+          }
+        })();
+        return ()=>{active=false};
       },[]);
 
       // Email Magic Link：點擊後直接驗證並建立一年期登入。
@@ -922,7 +969,7 @@
       },[]);
 
       useEffect(()=>{
-        if(ticketId||adminMode||magicToken){setChecking(false);return;}
+        if(ticketId||adminMode||magicToken||accountLinkToken){setChecking(false);return;}
         const t=getStoredUserToken();
         if(!t){setUser(null);setChecking(false);return;}
 
@@ -942,7 +989,7 @@
 
       if(ticketId&&ticketToken)return <TicketPublic ticketId={ticketId} token={ticketToken} config={config}/>;
       if(adminMode)return <Admin config={config} onConfigChanged={refreshConfig}/>;
-      if(magicChecking || !config)return <Loading text={magicToken ? "正在完成一鍵登入..." : storedToken ? "正在辨識這台已信任裝置..." : "資料載入中..."}/>;
+      if(magicChecking || !config)return <Loading text={accountLinkToken ? "正在一鍵登入您的完整帳號..." : magicToken ? "正在完成一鍵登入..." : storedToken ? "正在辨識這台已信任裝置..." : "資料載入中..."}/>;
       if(magicError)return <Shell config={config}>
         <div className="bg-white rounded-[2rem] p-6 soft-card border">
           <Notice type="error">{magicError}</Notice>
