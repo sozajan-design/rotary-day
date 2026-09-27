@@ -33,7 +33,7 @@
 
     // 若您沿用既有 GAS「管理部署 → 編輯 → 新版本」，Web App 網址不會改變。
     const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbwTBjHVnzYJW53_inuVIaMJ0JZYpChnKsHJQkAmTB9uvV8BQPBuVTcSxN67TycpDkt8/exec";
-    const APP_VERSION = "v1.2.0";
+    const APP_VERSION = "v1.3.0";
     const USER_TOKEN_KEY = "huimin_rotaryday_user_token";
     const ADMIN_TOKEN_KEY = "huimin_rotaryday_admin_token";
     const USER_PROFILE_CACHE_KEY = "huimin_rotaryday_user_profile";
@@ -203,12 +203,15 @@
 
     function Auth({config, onAuthed}) {
       const [mode, setMode] = useState("login");
-      const [step, setStep] = useState("form");
+      const [step, setStep] = useState("form"); // form | magic | otp
       const [loading, setLoading] = useState(false);
       const [error, setError] = useState("");
       const [masked, setMasked] = useState("");
       const [phoneStatus, setPhoneStatus] = useState(null); // null | checking | registered | new | error
-      const [form, setForm] = useState({phone:(()=>{try{return localStorage.getItem(LAST_PHONE_KEY)||""}catch(e){return ""}})(), name:"", title:"先生", email:"", code:""});
+      const [form, setForm] = useState({
+        phone:(()=>{try{return localStorage.getItem(LAST_PHONE_KEY)||""}catch(e){return ""}})(),
+        name:"", title:"先生", email:"", code:""
+      });
       const set = (k,v) => setForm(f=>({...f,[k]:v}));
       const phoneValid = /^09\d{8}$/.test(form.phone);
 
@@ -219,7 +222,7 @@
         setError("");
       };
 
-      // v1.1.4：手機輸入滿 10 碼後，自動查後端是否已註冊，不必先按任何按鈕。
+      // 手機輸入滿 10 碼後，自動查後端是否已註冊。
       useEffect(() => {
         if (!phoneValid || step !== "form") {
           setPhoneStatus(null);
@@ -232,7 +235,6 @@
             const r = await apiWithRetry("check_phone", {phone: form.phone}, 1);
             if (cancelled) return;
             setPhoneStatus(r.registered ? "registered" : "new");
-            // 若是已註冊號碼而目前在「第一次建立帳號」，自動切回登入，避免老人家重複註冊。
             if (r.registered && mode === "register") setMode("login");
           } catch(e) {
             if (!cancelled) setPhoneStatus("error");
@@ -241,14 +243,12 @@
         return () => { cancelled = true; clearTimeout(timer); };
       }, [form.phone, phoneValid, step, mode]);
 
-      async function sendCode() {
+      async function sendMagicLink() {
         setError("");
         if (!phoneValid) {
           setError("手機號碼必須填滿 10 碼數字，並以 09 開頭，例如：0912345678");
           return;
         }
-
-        // 已知狀態先直接引導，避免多跑一次錯誤流程。
         if (mode === "login" && phoneStatus === "new") {
           setMode("register");
           setError("這支手機尚未建立帳號，請填寫姓名與 Email 建立帳號。");
@@ -279,7 +279,7 @@
             }
           }
           setMasked(r.maskedEmail || "");
-          setStep("otp");
+          setStep("magic");
         } catch(e) {
           setError(e.message);
         } finally {
@@ -287,8 +287,12 @@
         }
       }
 
-      async function verify() {
+      async function verifyOtp() {
         setError("");
+        if (!/^\d{6}$/.test(form.code)) {
+          setError("請輸入 Email 裡的 6 位數備用驗證碼");
+          return;
+        }
         setLoading(true);
         try {
           const action = mode === "register" ? "verify_register" : "verify_login";
@@ -302,12 +306,31 @@
         }
       }
 
+      async function recheckMagicLogin() {
+        setError("");
+        const t = getStoredUserToken();
+        if (!t) {
+          setError("目前尚未完成驗證。請先到 Email 點選「點我登入扶輪日售票系統」。");
+          return;
+        }
+        setLoading(true);
+        try {
+          const r = await apiWithRetry("session_me", {sessionToken:t}, 1);
+          persistUserSession(t, r.user);
+          onAuthed(r.user, t);
+        } catch(e) {
+          setError("尚未完成登入，請回到 Email 點選紫色登入按鈕。");
+        } finally {
+          setLoading(false);
+        }
+      }
+
       const loginReady = phoneValid && phoneStatus !== "new";
       const registerReady = phoneValid && phoneStatus !== "registered";
 
       return <Shell config={config}>
-        {loading && <Loading text={step === "otp" ? "正在驗證..." : "正在寄送驗證碼..."} />}
-        <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-6">
+        {loading && <Loading text={step === "otp" ? "正在驗證備用驗證碼..." : step === "magic" ? "正在確認登入狀態..." : "正在寄送一鍵登入連結..."} />}
+        <div className="bg-white rounded-[2rem] shadow-sm border border-slate-100 p-5 sm:p-6 soft-card">
           <div className="flex bg-slate-100 rounded-2xl p-1 mb-6">
             <button
               onClick={()=>{setMode("login");setStep("form");setError("")}}
@@ -324,15 +347,15 @@
           {step === "form" && mode === "login" &&
             <div className="mb-4">
               <Notice>
-                <b>已註冊會員：</b>請輸入完整 10 碼手機號碼，系統會立即查詢是否已有帳號。
-                同一台手機／同一個瀏覽器完成一次驗證後，會信任此裝置 1 年並自動登入。
+                <b>已註冊會員：</b>輸入完整 10 碼手機號碼後，系統會立即確認帳號。
+                第一次使用這台裝置時，只要到 Email <b>點一下登入連結</b>，不用記驗證碼。
               </Notice>
             </div>
           }
 
-          {step === "form" ? <div className="space-y-4">
+          {step === "form" && <div className="space-y-5">
             <div>
-              <label className="text-sm font-bold text-slate-600">手機號碼</label>
+              <label className="text-base sm:text-sm font-bold text-slate-700">手機號碼</label>
               <input
                 value={form.phone}
                 onChange={e=>setPhone(e.target.value)}
@@ -340,98 +363,85 @@
                 autoComplete="tel"
                 maxLength={10}
                 placeholder="例如：0912345678"
-                className={`mt-1 w-full px-4 py-4 rounded-2xl border outline-none focus:ring-2 text-lg tracking-wide ${
+                className={`mt-1 w-full px-5 py-5 rounded-3xl border-2 outline-none focus:ring-4 text-[2rem] sm:text-2xl font-black tracking-wide ${
                   form.phone && !phoneValid ? "border-red-300 focus:ring-red-100" :
                   phoneStatus === "registered" ? "border-emerald-300 focus:ring-emerald-100" :
                   phoneStatus === "new" ? "border-amber-300 focus:ring-amber-100" :
-                  "border-slate-200 focus:ring-violet-200"
+                  "border-violet-200 focus:ring-violet-100"
                 }`}
               />
-
-              <div className="mt-2 flex items-center justify-between gap-3 text-xs">
+              <div className="mt-3 flex items-center justify-between gap-3 text-base sm:text-sm">
                 <span className={form.phone && !phoneValid ? "text-red-500 font-bold" : "text-slate-400"}>
-                  請輸入 09 開頭的 10 碼手機號碼，例如：0912345678
+                  請輸入 09 開頭的 10 碼手機號碼
                 </span>
-                <span className={`shrink-0 font-mono font-bold ${phoneValid ? "text-emerald-600" : "text-slate-400"}`}>{form.phone.length}/10</span>
+                <span className={`shrink-0 font-mono font-black ${phoneValid ? "text-emerald-600" : "text-slate-400"}`}>{form.phone.length}/10</span>
               </div>
 
               {form.phone.length === 10 && !phoneValid &&
-                <div className="mt-2 text-sm font-black text-red-500">
-                  手機號碼格式不正確，第一、二碼必須是 09。
-                </div>
+                <div className="mt-2 text-base font-black text-red-500">手機號碼格式不正確，必須是 09 開頭共 10 碼。</div>
               }
-
               {phoneValid && phoneStatus === "checking" &&
-                <div className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-500">
-                  ⏳ 正在查詢這支手機是否已註冊…
-                </div>
+                <div className="mt-3 rounded-2xl bg-slate-50 px-4 py-3 text-base font-bold text-slate-500">⏳ 正在查詢這支手機是否已註冊…</div>
               }
-
               {phoneValid && phoneStatus === "registered" &&
-                <div className="mt-3 rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-sm font-black text-emerald-700">
-                  ✅ 此手機號碼已註冊，不需要重新建立帳號。
-                </div>
+                <div className="mt-3 rounded-2xl bg-emerald-50 border border-emerald-200 px-4 py-4 text-base font-black text-emerald-700">✅ 此手機號碼已註冊</div>
               }
-
               {phoneValid && phoneStatus === "new" &&
-                <div className="mt-3 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-black text-amber-700">
-                  尚未找到此手機的帳號，請使用「第一次建立帳號」。
-                </div>
-              }
-
-              {phoneValid && phoneStatus === "error" &&
-                <div className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-500">
-                  目前查詢較慢，仍可繼續操作。
-                </div>
+                <div className="mt-3 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-4 text-base font-black text-amber-700">尚未找到此手機帳號，請使用「第一次建立帳號」。</div>
               }
             </div>
 
             {mode === "register" && <>
-              <div><label className="text-sm font-bold text-slate-600">姓名</label><input value={form.name} onChange={e=>set("name",e.target.value)} className="mt-1 w-full px-4 py-4 rounded-2xl border border-slate-200" /></div>
-              <div><label className="text-sm font-bold text-slate-600">稱謂</label><div className="grid grid-cols-2 gap-3 mt-2">{["先生","小姐"].map(t=><button type="button" key={t} onClick={()=>set("title",t)} className={`py-3 rounded-2xl border font-black ${form.title===t?"bg-violet-50 border-violet-300 text-[#5B3F8C]":"border-slate-200 text-slate-500"}`}>{t}</button>)}</div></div>
-              <div><label className="text-sm font-bold text-slate-600">Email</label><input value={form.email} onChange={e=>set("email",e.target.value)} inputMode="email" placeholder="收據與入場券將寄到這裡" className="mt-1 w-full px-4 py-4 rounded-2xl border border-slate-200" /></div>
+              <div><label className="text-base sm:text-sm font-bold text-slate-700">姓名</label><input value={form.name} onChange={e=>set("name",e.target.value)} className="mt-1 w-full px-4 py-4 rounded-2xl border-2 border-slate-200 text-lg" /></div>
+              <div><label className="text-base sm:text-sm font-bold text-slate-700">稱謂</label><div className="grid grid-cols-2 gap-3 mt-2">{["先生","小姐"].map(t=><button type="button" key={t} onClick={()=>set("title",t)} className={`py-4 rounded-2xl border-2 text-lg font-black ${form.title===t?"bg-violet-50 border-violet-300 text-[#5B3F8C]":"border-slate-200 text-slate-500"}`}>{t}</button>)}</div></div>
+              <div><label className="text-base sm:text-sm font-bold text-slate-700">Email</label><input value={form.email} onChange={e=>set("email",e.target.value)} inputMode="email" autoComplete="email" placeholder="收據與入場券將寄到這裡" className="mt-1 w-full px-4 py-4 rounded-2xl border-2 border-slate-200 text-lg" /></div>
             </>}
 
             {mode === "login" && phoneStatus === "new" &&
-              <button
-                type="button"
-                onClick={()=>{setMode("register");setError("")}}
-                className="w-full py-4 rounded-2xl bg-amber-500 text-white font-black text-lg"
-              >
-                前往第一次建立帳號
-              </button>
+              <button type="button" onClick={()=>{setMode("register");setError("")}} className="w-full py-4 rounded-2xl bg-amber-500 text-white font-black text-lg">前往第一次建立帳號</button>
             }
 
             <button
               disabled={loading || (mode==="login" ? !loginReady : !registerReady)}
-              onClick={sendCode}
-              className={`w-full py-4 rounded-2xl text-white font-black text-lg shadow-lg transition ${
+              onClick={sendMagicLink}
+              className={`w-full py-5 rounded-3xl text-white font-black text-xl shadow-lg transition ${
                 !loading && (mode==="login" ? loginReady : registerReady)
                   ? "bg-[#5B3F8C] active:scale-[.99]"
                   : "bg-slate-300 cursor-not-allowed shadow-none"
               }`}
             >
-              {mode==="register"
-                ? "建立帳號並寄驗證碼"
-                : phoneStatus === "registered"
-                  ? "此手機已註冊｜驗證此裝置一次"
-                  : "登入此手機"
-              }
+              {mode==="register" ? "建立帳號並寄送一鍵登入連結" : "寄送一鍵登入連結"}
             </button>
 
-            {mode === "login" && phoneStatus === "registered" &&
-              <div className="text-center text-xs leading-6 text-slate-400">
-                若這台裝置先前已完成驗證，系統會自動登入；現在看到此按鈕表示這台瀏覽器目前沒有可用的信任憑證，只需驗證這台裝置一次。
-              </div>
-            }
-          </div> : <div>
-            <div className="text-center mb-5">
-              <div className="text-xl sm:text-lg font-black">請查看 Email</div>
-              <div className="text-base sm:text-sm text-slate-400 mt-1">驗證碼已寄至 {masked}</div>
+            <div className="text-center text-sm leading-6 text-slate-400">
+              Email 收到後只要點一下紫色登入按鈕，就會直接回到本系統。
             </div>
-            <input value={form.code} onChange={e=>set("code",e.target.value.replace(/\D/g,"").slice(0,6))} inputMode="numeric" placeholder="6 位數驗證碼" className="w-full text-center tracking-[.35em] text-3xl sm:text-2xl font-black px-4 py-5 rounded-3xl border-2 border-slate-200" />
-            <button onClick={verify} className="w-full mt-4 py-5 rounded-3xl bg-[#5B3F8C] text-white font-black text-xl sm:text-lg shadow-lg">確認登入</button>
-            <button onClick={()=>setStep("form")} className="w-full mt-3 py-3 text-slate-400 font-bold text-base sm:text-sm">返回修改資料</button>
+          </div>}
+
+          {step === "magic" && <div className="text-center py-2">
+            <div className="w-20 h-20 mx-auto rounded-full bg-violet-100 text-[#5B3F8C] flex items-center justify-center text-4xl">✉️</div>
+            <h2 className="text-2xl font-black mt-5">請打開 Email</h2>
+            <div className="text-base text-slate-500 mt-2 leading-7">
+              登入連結已寄到 <b>{masked}</b><br/>
+              請在 Email 裡直接點選：
+            </div>
+            <div className="mt-5 bg-[#5B3F8C] text-white rounded-3xl py-4 px-5 font-black text-xl">✅ 點我登入扶輪日售票系統</div>
+            <div className="mt-4 rounded-2xl bg-emerald-50 border border-emerald-200 p-4 text-emerald-700 font-bold leading-7">
+              不需要記數字，也不用再輸入驗證碼。<br/>連結 15 分鐘內有效，成功後此裝置信任 1 年。
+            </div>
+            <button onClick={recheckMagicLogin} className="w-full mt-5 py-4 rounded-2xl border-2 border-violet-200 text-[#5B3F8C] font-black text-lg">我已點 Email 連結，重新檢查</button>
+            <button onClick={()=>{setStep("otp");setError("")}} className="w-full mt-3 py-3 text-slate-500 font-bold text-base">收不到連結？改用 6 位數備用驗證碼</button>
+            <button onClick={()=>{setStep("form");setError("")}} className="w-full mt-1 py-3 text-slate-400 font-bold text-sm">返回重新寄送</button>
+          </div>}
+
+          {step === "otp" && <div>
+            <div className="text-center mb-5">
+              <div className="text-2xl font-black">使用備用驗證碼</div>
+              <div className="text-base text-slate-400 mt-1">請輸入 Email 下方的 6 位數字</div>
+            </div>
+            <input value={form.code} onChange={e=>set("code",e.target.value.replace(/\D/g,"").slice(0,6))} inputMode="numeric" placeholder="6 位數驗證碼" className="w-full text-center tracking-[.35em] text-3xl font-black px-4 py-5 rounded-3xl border-2 border-slate-200" />
+            <button onClick={verifyOtp} className="w-full mt-4 py-5 rounded-3xl bg-[#5B3F8C] text-white font-black text-xl shadow-lg">確認登入</button>
+            <button onClick={()=>{setStep("magic");setError("")}} className="w-full mt-3 py-3 text-slate-400 font-bold text-base">返回一鍵登入說明</button>
           </div>}
         </div>
       </Shell>;
@@ -606,6 +616,7 @@
       const ticketId=params.get("ticket");
       const ticketToken=params.get("k");
       const adminMode=params.get("admin")==="1";
+      const magicToken=params.get("magic");
 
       const storedToken = getStoredUserToken();
       const cachedUser = storedToken ? readJson(USER_PROFILE_CACHE_KEY, null) : null;
@@ -613,7 +624,9 @@
 
       const [config,setConfig]=useState(cachedConfig);
       const [user,setUser]=useState(cachedUser);
-      const [checking,setChecking]=useState(!cachedUser && !ticketId && !adminMode);
+      const [checking,setChecking]=useState(!cachedUser && !ticketId && !adminMode && !magicToken);
+      const [magicChecking,setMagicChecking]=useState(!!magicToken);
+      const [magicError,setMagicError]=useState("");
 
       async function refreshConfig(){
         try{
@@ -629,12 +642,42 @@
         if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
       },[]);
 
+      // Email Magic Link：點擊後直接驗證並建立一年期登入。
       useEffect(()=>{
-        if(ticketId||adminMode){setChecking(false);return;}
+        if(!magicToken) return;
+        setMagicChecking(true);
+        setMagicError("");
+        api("verify_magic_link",{magicToken})
+          .then(r=>{
+            persistUserSession(r.sessionToken,r.user);
+            setUser(r.user);
+          })
+          .catch(e=>setMagicError(e.message || "登入連結驗證失敗"))
+          .finally(()=>{
+            try { history.replaceState({}, "", location.pathname); } catch(e) {}
+            setMagicChecking(false);
+          });
+      },[]);
+
+      // 若 Magic Link 在同一瀏覽器的另一個分頁完成登入，原本頁面也自動跟上。
+      useEffect(()=>{
+        const handler = async (e) => {
+          if (e.key !== USER_TOKEN_KEY || !e.newValue) return;
+          try {
+            const r = await apiWithRetry("session_me",{sessionToken:e.newValue},1);
+            persistUserSession(e.newValue,r.user);
+            setUser(r.user);
+          } catch(ignore) {}
+        };
+        window.addEventListener("storage", handler);
+        return ()=>window.removeEventListener("storage", handler);
+      },[]);
+
+      useEffect(()=>{
+        if(ticketId||adminMode||magicToken){setChecking(false);return;}
         const t=getStoredUserToken();
         if(!t){setUser(null);setChecking(false);return;}
 
-        // 同一支手機／同一瀏覽器會保留登入。短暫網路錯誤不再刪除登入憑證。
         apiWithRetry("session_me",{sessionToken:t},2)
           .then(r=>{
             setUser(r.user);
@@ -645,14 +688,20 @@
               clearUserSession();
               setUser(null);
             }
-            // 非登入失效（例如 GAS 冷啟動、網路暫斷）時保留原登入，不要求重新收驗證碼。
           })
           .finally(()=>setChecking(false));
       },[]);
 
       if(ticketId&&ticketToken)return <TicketPublic ticketId={ticketId} token={ticketToken} config={config}/>;
       if(adminMode)return <Admin config={config} onConfigChanged={refreshConfig}/>;
-      if(checking||!config)return <Loading text={storedToken ? "正在辨識這台已信任裝置..." : "資料載入中..."}/>;
+      if(magicChecking || !config)return <Loading text={magicToken ? "正在完成一鍵登入..." : storedToken ? "正在辨識這台已信任裝置..." : "資料載入中..."}/>;
+      if(magicError)return <Shell config={config}>
+        <div className="bg-white rounded-[2rem] p-6 soft-card border">
+          <Notice type="error">{magicError}</Notice>
+          <a href="./" className="block w-full mt-5 py-4 rounded-2xl bg-[#5B3F8C] text-white text-center font-black text-lg">重新登入</a>
+        </div>
+      </Shell>;
+      if(checking)return <Loading text={storedToken ? "正在辨識這台已信任裝置..." : "資料載入中..."}/>;
       if(!user)return <Auth config={config} onAuthed={(u, token)=>{
         setUser(u);
         persistUserSession(token || getStoredUserToken(), u);
