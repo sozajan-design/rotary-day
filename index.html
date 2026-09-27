@@ -33,7 +33,7 @@
 
     // 若您沿用既有 GAS「管理部署 → 編輯 → 新版本」，Web App 網址不會改變。
     const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbwTBjHVnzYJW53_inuVIaMJ0JZYpChnKsHJQkAmTB9uvV8BQPBuVTcSxN67TycpDkt8/exec";
-    const APP_VERSION = "v1.5.3";
+    const APP_VERSION = "v1.5.4";
     const USER_TOKEN_KEY = "huimin_rotaryday_user_token";
     const ADMIN_TOKEN_KEY = "huimin_rotaryday_admin_token";
     const USER_PROFILE_CACHE_KEY = "huimin_rotaryday_user_profile";
@@ -318,14 +318,16 @@
         try {
           let r;
           if (mode === "register") {
-            r = await api("start_register", {phone:form.phone,name:form.name,title:form.title,email:form.email});
+            const returnOrderId=new URLSearchParams(location.search).get("order")||"";
+            r = await api("start_register", {phone:form.phone,name:form.name,title:form.title,email:form.email,returnOrderId});
             if (r.status === "exists") {
               setPhoneStatus("registered");
               setMode("login");
               throw new Error("這支手機已經註冊過，請使用手機登入。");
             }
           } else {
-            r = await api("start_login", {phone:form.phone});
+            const returnOrderId=new URLSearchParams(location.search).get("order")||"";
+            r = await api("start_login", {phone:form.phone,returnOrderId});
             if (r.status === "not_found") {
               setPhoneStatus("new");
               setMode("register");
@@ -562,7 +564,7 @@
       </div>;
     }
 
-    function BuyerDashboard({config,user,onLogout}) {
+    function BuyerDashboard({config,user,onLogout,focusOrderId}) {
       const ordersCacheKey = ORDERS_CACHE_PREFIX + user.userId;
       const [orders,setOrders]=useState(()=>readJson(ordersCacheKey, [])); const [qty,setQty]=useState(1);
       const defaultReceiptTitle=`${user.name}${user.title}`;
@@ -581,6 +583,16 @@
         }catch(e){setError("目前連線較慢，已保留上次資料。請稍後按「更新」即可。")}
       }
       useEffect(()=>{refresh()},[]);
+      useEffect(()=>{
+        if(!focusOrderId || !orders.length) return;
+        const target=orders.find(o=>o.orderId===focusOrderId);
+        if(!target) return;
+        const timer=setTimeout(()=>{
+          const el=document.getElementById(`order-${focusOrderId}`);
+          if(el){el.scrollIntoView({behavior:"smooth",block:"start"});}
+        },350);
+        return ()=>clearTimeout(timer);
+      },[focusOrderId,orders.length]);
       function focusField(id){
         setTimeout(()=>{
           const el=document.getElementById(id);
@@ -725,6 +737,7 @@
         </section>
 
         <section className="mt-6">
+          {focusOrderId&&<div className="mb-4 rounded-2xl border-2 border-amber-200 bg-amber-50 p-4 text-amber-800"><div className="font-black text-lg">🎁 票券分配管理</div><div className="text-sm mt-1 leading-6">請在下方找到您的票券，按「指定給誰」登記受贈人；之後就不怕忘記每張票送給哪一位親友。</div></div>}
           <div className="flex items-center justify-between mb-3"><h2 className="font-black text-2xl sm:text-lg">我的訂單</h2><button onClick={refresh} className="px-4 py-2 rounded-2xl bg-white border text-base sm:text-xs font-bold text-[#5B3F8C]">更新</button></div>
           {!orders.length ? <div className="bg-white rounded-[1.6rem] p-7 text-center text-slate-400 text-base sm:text-sm soft-card">目前沒有訂單</div> : <div className="space-y-4">
             {orders.map(o=>{ const sm=statusMap[o.status]||[o.status,"bg-slate-100"]; return <div id={`order-${o.orderId}`} key={o.orderId} className="bg-white rounded-[1.8rem] border border-slate-100 p-5 soft-card shadow-sm">
@@ -844,6 +857,8 @@
       const ticketId=params.get("ticket");
       const ticketToken=params.get("k");
       const adminMode=params.get("admin")==="1";
+      const manageMode=params.get("manage")==="1";
+      const manageOrderId=params.get("order")||"";
       const magicToken=params.get("magic");
 
       const storedToken = getStoredUserToken();
@@ -882,7 +897,12 @@
           })
           .catch(e=>setMagicError(e.message || "登入連結驗證失敗"))
           .finally(()=>{
-            try { history.replaceState({}, "", location.pathname); } catch(e) {}
+            try {
+              const q=new URLSearchParams();
+              if(manageMode) q.set("manage","1");
+              if(manageOrderId) q.set("order",manageOrderId);
+              history.replaceState({}, "", location.pathname + (q.toString()?"?"+q.toString():""));
+            } catch(e) {}
             setMagicChecking(false);
           });
       },[]);
@@ -934,7 +954,7 @@
         setUser(u);
         persistUserSession(token || getStoredUserToken(), u);
       }}/>;
-      return <BuyerDashboard config={config} user={user} onLogout={()=>{
+      return <BuyerDashboard config={config} user={user} focusOrderId={manageMode?manageOrderId:""} onLogout={()=>{
         const t=getStoredUserToken();
         api("logout",{sessionToken:t}).catch(()=>{});
         clearUserSession();
