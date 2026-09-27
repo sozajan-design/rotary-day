@@ -26,7 +26,7 @@
 
     // 若您沿用既有 GAS「管理部署 → 編輯 → 新版本」，Web App 網址不會改變。
     const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbwTBjHVnzYJW53_inuVIaMJ0JZYpChnKsHJQkAmTB9uvV8BQPBuVTcSxN67TycpDkt8/exec";
-    const APP_VERSION = "v1.1.3";
+    const APP_VERSION = "v1.1.4";
     const USER_TOKEN_KEY = "huimin_rotaryday_user_token";
     const ADMIN_TOKEN_KEY = "huimin_rotaryday_admin_token";
     const USER_PROFILE_CACHE_KEY = "huimin_rotaryday_user_profile";
@@ -200,10 +200,39 @@
       const [loading, setLoading] = useState(false);
       const [error, setError] = useState("");
       const [masked, setMasked] = useState("");
+      const [phoneStatus, setPhoneStatus] = useState(null); // null | checking | registered | new | error
       const [form, setForm] = useState({phone:(()=>{try{return localStorage.getItem(LAST_PHONE_KEY)||""}catch(e){return ""}})(), name:"", title:"先生", email:"", code:""});
       const set = (k,v) => setForm(f=>({...f,[k]:v}));
       const phoneValid = /^09\d{8}$/.test(form.phone);
-      const setPhone = (v) => set("phone", String(v || "").replace(/\D/g,"").slice(0,10));
+
+      const setPhone = (v) => {
+        const cleaned = String(v || "").replace(/\D/g,"").slice(0,10);
+        set("phone", cleaned);
+        setPhoneStatus(null);
+        setError("");
+      };
+
+      // v1.1.4：手機輸入滿 10 碼後，自動查後端是否已註冊，不必先按任何按鈕。
+      useEffect(() => {
+        if (!phoneValid || step !== "form") {
+          setPhoneStatus(null);
+          return;
+        }
+        let cancelled = false;
+        const timer = setTimeout(async () => {
+          setPhoneStatus("checking");
+          try {
+            const r = await apiWithRetry("check_phone", {phone: form.phone}, 1);
+            if (cancelled) return;
+            setPhoneStatus(r.registered ? "registered" : "new");
+            // 若是已註冊號碼而目前在「第一次建立帳號」，自動切回登入，避免老人家重複註冊。
+            if (r.registered && mode === "register") setMode("login");
+          } catch(e) {
+            if (!cancelled) setPhoneStatus("error");
+          }
+        }, 350);
+        return () => { cancelled = true; clearTimeout(timer); };
+      }, [form.phone, phoneValid, step, mode]);
 
       async function sendCode() {
         setError("");
@@ -211,37 +240,89 @@
           setError("手機號碼必須填滿 10 碼數字，並以 09 開頭，例如：0912345678");
           return;
         }
+
+        // 已知狀態先直接引導，避免多跑一次錯誤流程。
+        if (mode === "login" && phoneStatus === "new") {
+          setMode("register");
+          setError("這支手機尚未建立帳號，請填寫姓名與 Email 建立帳號。");
+          return;
+        }
+        if (mode === "register" && phoneStatus === "registered") {
+          setMode("login");
+          setError("這支手機已經註冊過，不需要重新建立帳號。");
+          return;
+        }
+
         setLoading(true);
         try {
           let r;
           if (mode === "register") {
             r = await api("start_register", {phone:form.phone,name:form.name,title:form.title,email:form.email});
-            if (r.status === "exists") { setMode("login"); throw new Error(r.message); }
+            if (r.status === "exists") {
+              setPhoneStatus("registered");
+              setMode("login");
+              throw new Error("這支手機已經註冊過，請使用手機登入。");
+            }
           } else {
             r = await api("start_login", {phone:form.phone});
-            if (r.status === "not_found") { setMode("register"); throw new Error(r.message); }
+            if (r.status === "not_found") {
+              setPhoneStatus("new");
+              setMode("register");
+              throw new Error("這支手機尚未建立帳號，請先建立帳號。");
+            }
           }
-          setMasked(r.maskedEmail || ""); setStep("otp");
-        } catch(e) { setError(e.message); } finally { setLoading(false); }
+          setMasked(r.maskedEmail || "");
+          setStep("otp");
+        } catch(e) {
+          setError(e.message);
+        } finally {
+          setLoading(false);
+        }
       }
+
       async function verify() {
-        setError(""); setLoading(true);
+        setError("");
+        setLoading(true);
         try {
           const action = mode === "register" ? "verify_register" : "verify_login";
           const r = await api(action, {phone:form.phone,code:form.code});
-          persistUserSession(r.sessionToken, r.user); onAuthed(r.user, r.sessionToken);
-        } catch(e) { setError(e.message); } finally { setLoading(false); }
+          persistUserSession(r.sessionToken, r.user);
+          onAuthed(r.user, r.sessionToken);
+        } catch(e) {
+          setError(e.message);
+        } finally {
+          setLoading(false);
+        }
       }
+
+      const loginReady = phoneValid && phoneStatus !== "new";
+      const registerReady = phoneValid && phoneStatus !== "registered";
 
       return <Shell config={config}>
         {loading && <Loading text={step === "otp" ? "正在驗證..." : "正在寄送驗證碼..."} />}
         <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-6">
           <div className="flex bg-slate-100 rounded-2xl p-1 mb-6">
-            <button onClick={()=>{setMode("login");setStep("form");setError("")}} className={`flex-1 py-3 rounded-xl font-black ${mode==="login"?"bg-white shadow text-[#5B3F8C]":"text-slate-400"}`}>手機登入</button>
-            <button onClick={()=>{setMode("register");setStep("form");setError("")}} className={`flex-1 py-3 rounded-xl font-black ${mode==="register"?"bg-white shadow text-[#5B3F8C]":"text-slate-400"}`}>第一次建立帳號</button>
+            <button
+              onClick={()=>{setMode("login");setStep("form");setError("")}}
+              className={`flex-1 py-3 rounded-xl font-black ${mode==="login"?"bg-white shadow text-[#5B3F8C]":"text-slate-400"}`}
+            >手機登入</button>
+            <button
+              onClick={()=>{setMode("register");setStep("form");setError("")}}
+              className={`flex-1 py-3 rounded-xl font-black ${mode==="register"?"bg-white shadow text-[#5B3F8C]":"text-slate-400"}`}
+            >第一次建立帳號</button>
           </div>
+
           {error && <div className="mb-4"><Notice type="error">{error}</Notice></div>}
-          {step === "form" && mode === "login" && <div className="mb-4"><Notice><b>已註冊會員：</b>同一台手機／同一個瀏覽器只需驗證一次，之後會信任此裝置 1 年並自動登入。只有換裝置、清除瀏覽資料、主動登出或一年到期時，才會再次要求 Email 驗證。</Notice></div>}
+
+          {step === "form" && mode === "login" &&
+            <div className="mb-4">
+              <Notice>
+                <b>已註冊會員：</b>請輸入完整 10 碼手機號碼，系統會立即查詢是否已有帳號。
+                同一台手機／同一個瀏覽器完成一次驗證後，會信任此裝置 1 年並自動登入。
+              </Notice>
+            </div>
+          }
+
           {step === "form" ? <div className="space-y-4">
             <div>
               <label className="text-sm font-bold text-slate-600">手機號碼</label>
@@ -252,22 +333,95 @@
                 autoComplete="tel"
                 maxLength={10}
                 placeholder="例如：0912345678"
-                className={`mt-1 w-full px-4 py-4 rounded-2xl border outline-none focus:ring-2 text-lg tracking-wide ${form.phone && !phoneValid ? "border-red-300 focus:ring-red-100" : "border-slate-200 focus:ring-violet-200"}`}
+                className={`mt-1 w-full px-4 py-4 rounded-2xl border outline-none focus:ring-2 text-lg tracking-wide ${
+                  form.phone && !phoneValid ? "border-red-300 focus:ring-red-100" :
+                  phoneStatus === "registered" ? "border-emerald-300 focus:ring-emerald-100" :
+                  phoneStatus === "new" ? "border-amber-300 focus:ring-amber-100" :
+                  "border-slate-200 focus:ring-violet-200"
+                }`}
               />
+
               <div className="mt-2 flex items-center justify-between gap-3 text-xs">
-                <span className={form.phone && !phoneValid ? "text-red-500 font-bold" : "text-slate-400"}>請輸入 09 開頭的 10 碼手機號碼，例如：0912345678</span>
+                <span className={form.phone && !phoneValid ? "text-red-500 font-bold" : "text-slate-400"}>
+                  請輸入 09 開頭的 10 碼手機號碼，例如：0912345678
+                </span>
                 <span className={`shrink-0 font-mono font-bold ${phoneValid ? "text-emerald-600" : "text-slate-400"}`}>{form.phone.length}/10</span>
               </div>
-              {form.phone.length === 10 && !phoneValid && <div className="mt-2 text-sm font-black text-red-500">手機號碼格式不正確，第一、二碼必須是 09。</div>}
+
+              {form.phone.length === 10 && !phoneValid &&
+                <div className="mt-2 text-sm font-black text-red-500">
+                  手機號碼格式不正確，第一、二碼必須是 09。
+                </div>
+              }
+
+              {phoneValid && phoneStatus === "checking" &&
+                <div className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-500">
+                  ⏳ 正在查詢這支手機是否已註冊…
+                </div>
+              }
+
+              {phoneValid && phoneStatus === "registered" &&
+                <div className="mt-3 rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-sm font-black text-emerald-700">
+                  ✅ 此手機號碼已註冊，不需要重新建立帳號。
+                </div>
+              }
+
+              {phoneValid && phoneStatus === "new" &&
+                <div className="mt-3 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-black text-amber-700">
+                  尚未找到此手機的帳號，請使用「第一次建立帳號」。
+                </div>
+              }
+
+              {phoneValid && phoneStatus === "error" &&
+                <div className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-500">
+                  目前查詢較慢，仍可繼續操作。
+                </div>
+              }
             </div>
+
             {mode === "register" && <>
               <div><label className="text-sm font-bold text-slate-600">姓名</label><input value={form.name} onChange={e=>set("name",e.target.value)} className="mt-1 w-full px-4 py-4 rounded-2xl border border-slate-200" /></div>
               <div><label className="text-sm font-bold text-slate-600">稱謂</label><div className="grid grid-cols-2 gap-3 mt-2">{["先生","小姐"].map(t=><button type="button" key={t} onClick={()=>set("title",t)} className={`py-3 rounded-2xl border font-black ${form.title===t?"bg-violet-50 border-violet-300 text-[#5B3F8C]":"border-slate-200 text-slate-500"}`}>{t}</button>)}</div></div>
               <div><label className="text-sm font-bold text-slate-600">Email</label><input value={form.email} onChange={e=>set("email",e.target.value)} inputMode="email" placeholder="收據與入場券將寄到這裡" className="mt-1 w-full px-4 py-4 rounded-2xl border border-slate-200" /></div>
             </>}
-            <button disabled={!phoneValid || loading} onClick={sendCode} className={`w-full py-4 rounded-2xl text-white font-black text-lg shadow-lg transition ${phoneValid && !loading ? "bg-[#5B3F8C] active:scale-[.99]" : "bg-slate-300 cursor-not-allowed shadow-none"}`}>{mode==="register"?"建立帳號並寄驗證碼":"寄送驗證碼（此裝置首次登入）"}</button>
+
+            {mode === "login" && phoneStatus === "new" &&
+              <button
+                type="button"
+                onClick={()=>{setMode("register");setError("")}}
+                className="w-full py-4 rounded-2xl bg-amber-500 text-white font-black text-lg"
+              >
+                前往第一次建立帳號
+              </button>
+            }
+
+            <button
+              disabled={loading || (mode==="login" ? !loginReady : !registerReady)}
+              onClick={sendCode}
+              className={`w-full py-4 rounded-2xl text-white font-black text-lg shadow-lg transition ${
+                !loading && (mode==="login" ? loginReady : registerReady)
+                  ? "bg-[#5B3F8C] active:scale-[.99]"
+                  : "bg-slate-300 cursor-not-allowed shadow-none"
+              }`}
+            >
+              {mode==="register"
+                ? "建立帳號並寄驗證碼"
+                : phoneStatus === "registered"
+                  ? "此手機已註冊｜驗證此裝置一次"
+                  : "登入此手機"
+              }
+            </button>
+
+            {mode === "login" && phoneStatus === "registered" &&
+              <div className="text-center text-xs leading-6 text-slate-400">
+                若這台裝置先前已完成驗證，系統會自動登入；現在看到此按鈕表示這台瀏覽器目前沒有可用的信任憑證，只需驗證這台裝置一次。
+              </div>
+            }
           </div> : <div>
-            <div className="text-center mb-5"><div className="text-lg font-black">請查看 Email</div><div className="text-sm text-slate-400 mt-1">驗證碼已寄至 {masked}</div></div>
+            <div className="text-center mb-5">
+              <div className="text-lg font-black">請查看 Email</div>
+              <div className="text-sm text-slate-400 mt-1">驗證碼已寄至 {masked}</div>
+            </div>
             <input value={form.code} onChange={e=>set("code",e.target.value.replace(/\D/g,"").slice(0,6))} inputMode="numeric" placeholder="6 位數驗證碼" className="w-full text-center tracking-[.35em] text-2xl font-black px-4 py-4 rounded-2xl border border-slate-200" />
             <button onClick={verify} className="w-full mt-4 py-4 rounded-2xl bg-[#5B3F8C] text-white font-black text-lg">確認登入</button>
             <button onClick={()=>setStep("form")} className="w-full mt-2 py-3 text-slate-400 font-bold text-sm">返回修改資料</button>
