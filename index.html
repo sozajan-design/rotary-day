@@ -26,9 +26,23 @@
 
     // 若您沿用既有 GAS「管理部署 → 編輯 → 新版本」，Web App 網址不會改變。
     const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbwTBjHVnzYJW53_inuVIaMJ0JZYpChnKsHJQkAmTB9uvV8BQPBuVTcSxN67TycpDkt8/exec";
-    const APP_VERSION = "v1.1.1";
+    const APP_VERSION = "v1.1.2";
     const USER_TOKEN_KEY = "huimin_rotaryday_user_token";
     const ADMIN_TOKEN_KEY = "huimin_rotaryday_admin_token";
+    const USER_PROFILE_CACHE_KEY = "huimin_rotaryday_user_profile";
+    const CONFIG_CACHE_KEY = "huimin_rotaryday_config";
+    const ORDERS_CACHE_PREFIX = "huimin_rotaryday_orders_";
+
+    function readJson(key, fallback = null) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : fallback;
+      } catch(e) { return fallback; }
+    }
+    function writeJson(key, value) {
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch(e) {}
+    }
+    function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
     async function api(action, payload = {}) {
       const res = await fetch(DEFAULT_API_URL, {
@@ -40,6 +54,24 @@
       const json = await res.json();
       if (json.status === "error") throw new Error(json.message || "系統錯誤");
       return json;
+    }
+
+    // 只給「讀取型」API 使用，避免短暫網路不穩就把使用者踢回登入畫面。
+    async function apiWithRetry(action, payload = {}, retries = 2) {
+      let lastError;
+      for (let i = 0; i <= retries; i++) {
+        try { return await api(action, payload); }
+        catch(e) {
+          lastError = e;
+          if (i < retries) await sleep(450 * (i + 1));
+        }
+      }
+      throw lastError;
+    }
+
+    function isSessionInvalidError(message) {
+      const s = String(message || "");
+      return s.includes("登入已失效") || s.includes("登入已過期") || s.includes("權限不足");
     }
 
     const money = (n) => `NT$ ${Number(n || 0).toLocaleString("zh-TW")}`;
@@ -81,6 +113,7 @@
         <div className="bg-white rounded-3xl p-7 shadow-2xl w-full max-w-xs text-center">
           <div className="flex justify-center gap-2 mb-5"><div className="loading-dot"/><div className="loading-dot"/><div className="loading-dot"/></div>
           <div className="font-black text-slate-800">{text}</div>
+          <div className="text-xs text-slate-400 mt-2">正在安全連線，請稍候，不需要重複點擊</div>
         </div>
       </div>;
     }
@@ -93,7 +126,7 @@
     function TicketPublic({ticketId, token, config}) {
       const [data, setData] = useState(null);
       const [error, setError] = useState("");
-      useEffect(() => { api("get_ticket_public", { ticketId, token }).then(r => setData(r.data)).catch(e => setError(e.message)); }, [ticketId, token]);
+      useEffect(() => { apiWithRetry("get_ticket_public", { ticketId, token }, 1).then(r => setData(r.data)).catch(e => setError(e.message)); }, [ticketId, token]);
       if (error) return <Shell config={config}><Notice type="error">{error}</Notice></Shell>;
       if (!data) return <Loading text="正在開啟入場券..." />;
       const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(data.ticketUrl)}`;
@@ -234,13 +267,21 @@
     }
 
     function BuyerDashboard({config,user,onLogout}) {
-      const [orders,setOrders]=useState([]); const [qty,setQty]=useState(1);
+      const ordersCacheKey = ORDERS_CACHE_PREFIX + user.userId;
+      const [orders,setOrders]=useState(()=>readJson(ordersCacheKey, [])); const [qty,setQty]=useState(1);
       const [receiptTitle,setReceiptTitle]=useState(`${user.name}${user.title}`);
       const [identity,setIdentity]=useState(""); const [club,setClub]=useState(""); const [last5,setLast5]=useState("");
       const [paymentOrder,setPaymentOrder]=useState(null); const [loading,setLoading]=useState(false); const [error,setError]=useState("");
       const token=localStorage.getItem(USER_TOKEN_KEY);
       const total=qty*Number(config.ticketPrice||0);
-      async function refresh(){setError("");try{const r=await api("list_my_orders",{sessionToken:token});setOrders(r.data||[])}catch(e){setError(e.message)}}
+      async function refresh(){
+        setError("");
+        try{
+          const r=await apiWithRetry("list_my_orders",{sessionToken:token},1);
+          const next=r.data||[];
+          setOrders(next); writeJson(ordersCacheKey,next);
+        }catch(e){setError("目前連線較慢，已保留上次資料。請稍後按「更新」即可。")}
+      }
       useEffect(()=>{refresh()},[]);
       async function createOrder(){
         setLoading(true);setError("");
@@ -321,9 +362,9 @@
       const [token,setToken]=useState(localStorage.getItem(ADMIN_TOKEN_KEY)||""); const [password,setPassword]=useState("");
       const [pending,setPending]=useState([]); const [orders,setOrders]=useState([]); const [tab,setTab]=useState("pending");
       const [loading,setLoading]=useState(false); const [error,setError]=useState("");
-      async function verifyToken(t=token){if(!t)return false;try{await api("admin_session",{adminToken:t});return true}catch(e){localStorage.removeItem(ADMIN_TOKEN_KEY);setToken("");return false}}
-      async function loadPending(t=token){const r=await api("admin_pending_payments",{adminToken:t});setPending(r.data||[])}
-      async function loadOrders(t=token){const r=await api("admin_list_orders",{adminToken:t});setOrders(r.data||[])}
+      async function verifyToken(t=token){if(!t)return false;try{await apiWithRetry("admin_session",{adminToken:t},1);return true}catch(e){if(isSessionInvalidError(e.message)){localStorage.removeItem(ADMIN_TOKEN_KEY);setToken("");}return false}}
+      async function loadPending(t=token){const r=await apiWithRetry("admin_pending_payments",{adminToken:t},1);setPending(r.data||[])}
+      async function loadOrders(t=token){const r=await apiWithRetry("admin_list_orders",{adminToken:t},1);setOrders(r.data||[])}
       async function load(t=token){setLoading(true);setError("");try{await Promise.all([loadPending(t),loadOrders(t)])}catch(e){setError(e.message)}finally{setLoading(false)}}
       useEffect(()=>{if(token)verifyToken(token).then(ok=>ok&&load(token))},[]);
       async function login(){setLoading(true);setError("");try{const r=await api("admin_login",{password});localStorage.setItem(ADMIN_TOKEN_KEY,r.adminToken);setToken(r.adminToken);await load(r.adminToken)}catch(e){setError(e.message)}finally{setLoading(false)}}
@@ -356,16 +397,67 @@
     }
 
     function App(){
-      const params=new URLSearchParams(location.search); const ticketId=params.get("ticket"); const ticketToken=params.get("k"); const adminMode=params.get("admin")==="1";
-      const [config,setConfig]=useState(null); const [user,setUser]=useState(null); const [checking,setChecking]=useState(true);
-      async function refreshConfig(){try{const r=await api("get_config");setConfig(r.data)}catch(e){setConfig({eventName:"臺中惠民扶輪社 扶輪日",ticketTitle:"扶輪日入場券",ticketPrice:0,maxTicketsPerOrder:20,salesOpen:true})}}
+      const params=new URLSearchParams(location.search);
+      const ticketId=params.get("ticket");
+      const ticketToken=params.get("k");
+      const adminMode=params.get("admin")==="1";
+
+      const storedToken = localStorage.getItem(USER_TOKEN_KEY);
+      const cachedUser = storedToken ? readJson(USER_PROFILE_CACHE_KEY, null) : null;
+      const cachedConfig = readJson(CONFIG_CACHE_KEY, null);
+
+      const [config,setConfig]=useState(cachedConfig);
+      const [user,setUser]=useState(cachedUser);
+      const [checking,setChecking]=useState(!cachedUser && !ticketId && !adminMode);
+
+      async function refreshConfig(){
+        try{
+          const r=await apiWithRetry("get_config",{},1);
+          setConfig(r.data); writeJson(CONFIG_CACHE_KEY,r.data);
+        }catch(e){
+          if(!config) setConfig({eventName:"臺中惠民扶輪社 扶輪日",ticketTitle:"扶輪日入場券",ticketPrice:0,maxTicketsPerOrder:20,salesOpen:true});
+        }
+      }
+
       useEffect(()=>{refreshConfig()},[]);
-      useEffect(()=>{if(ticketId||adminMode){setChecking(false);return;}const t=localStorage.getItem(USER_TOKEN_KEY);if(!t){setChecking(false);return;}api("session_me",{sessionToken:t}).then(r=>setUser(r.user)).catch(()=>localStorage.removeItem(USER_TOKEN_KEY)).finally(()=>setChecking(false))},[]);
+
+      useEffect(()=>{
+        if(ticketId||adminMode){setChecking(false);return;}
+        const t=localStorage.getItem(USER_TOKEN_KEY);
+        if(!t){setUser(null);setChecking(false);return;}
+
+        // 同一支手機／同一瀏覽器會保留登入。短暫網路錯誤不再刪除登入憑證。
+        apiWithRetry("session_me",{sessionToken:t},2)
+          .then(r=>{
+            setUser(r.user);
+            writeJson(USER_PROFILE_CACHE_KEY,r.user);
+          })
+          .catch(e=>{
+            if(isSessionInvalidError(e.message)){
+              localStorage.removeItem(USER_TOKEN_KEY);
+              localStorage.removeItem(USER_PROFILE_CACHE_KEY);
+              setUser(null);
+            }
+            // 非登入失效（例如 GAS 冷啟動、網路暫斷）時保留原登入，不要求重新收驗證碼。
+          })
+          .finally(()=>setChecking(false));
+      },[]);
+
       if(ticketId&&ticketToken)return <TicketPublic ticketId={ticketId} token={ticketToken} config={config}/>;
       if(adminMode)return <Admin config={config} onConfigChanged={refreshConfig}/>;
-      if(checking||!config)return <Loading/>;
-      if(!user)return <Auth config={config} onAuthed={(u)=>setUser(u)}/>;
-      return <BuyerDashboard config={config} user={user} onLogout={()=>{const t=localStorage.getItem(USER_TOKEN_KEY);api("logout",{sessionToken:t}).catch(()=>{});localStorage.removeItem(USER_TOKEN_KEY);setUser(null)}}/>;
+      if(checking||!config)return <Loading text={storedToken ? "正在恢復您的登入..." : "資料載入中..."}/>;
+      if(!user)return <Auth config={config} onAuthed={(u)=>{
+        setUser(u);
+        writeJson(USER_PROFILE_CACHE_KEY,u);
+      }}/>;
+      return <BuyerDashboard config={config} user={user} onLogout={()=>{
+        const t=localStorage.getItem(USER_TOKEN_KEY);
+        api("logout",{sessionToken:t}).catch(()=>{});
+        localStorage.removeItem(USER_TOKEN_KEY);
+        localStorage.removeItem(USER_PROFILE_CACHE_KEY);
+        localStorage.removeItem(ORDERS_CACHE_PREFIX + user.userId);
+        setUser(null);
+      }}/>;
     }
 
     ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
