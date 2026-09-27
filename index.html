@@ -1,351 +1,129 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>臺中惠民扶輪社｜扶輪日售票系統</title>
-  <meta name="theme-color" content="#5B3F8C" />
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <style>
-    body { -webkit-tap-highlight-color: transparent; }
-    .safe-bottom { padding-bottom: max(24px, env(safe-area-inset-bottom)); }
-    .ticket-shadow { box-shadow: 0 18px 50px rgba(57, 35, 92, .18); }
-    .loading-dot { width:10px;height:10px;border-radius:50%;background:#6d5aa4;animation:b .7s infinite alternate; }
-    .loading-dot:nth-child(2){animation-delay:.15s}.loading-dot:nth-child(3){animation-delay:.3s}
-    @keyframes b { to { transform:translateY(-8px); opacity:.45; } }
-  </style>
-</head>
-<body class="bg-slate-50 text-slate-900 min-h-screen">
-  <div id="root"></div>
+臺中惠民扶輪社｜扶輪日售票暨入場系統
+v1.1.0 更新部署步驟
+==================================================
 
-  <script type="text/babel">
-    const { useEffect, useMemo, useState } = React;
+【本版檔案】
+1. 扶輪日售票系統_Code_v1.1.0.gs          → Google Apps Script 後端
+2. 扶輪日售票系統_Index_v1.1.0.html       → rotary-day GitHub Pages 售票前端
+3. 扶輪日報到系統_Index_v4.1.0.html       → 現場報到 GitHub Pages 前端
 
-    // 若您沿用既有 GAS「管理部署 → 編輯 → 新版本」，Web App 網址不會改變。
-    const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbwTBjHVnzYJW53_inuVIaMJ0JZYpChnKsHJQkAmTB9uvV8BQPBuVTcSxN67TycpDkt8/exec";
-    const APP_VERSION = "v1.1.0";
-    const USER_TOKEN_KEY = "huimin_rotaryday_user_token";
-    const ADMIN_TOKEN_KEY = "huimin_rotaryday_admin_token";
+--------------------------------------------------
+一、先更新 GAS 後端
+--------------------------------------------------
+1. 打開「扶輪入場名單」Google Sheets。
+2. 擴充功能 → Apps Script。
+3. 將目前 Code.gs 內容完整換成「扶輪日售票系統_Code_v1.1.0.gs」。
+4. 儲存。
+5. 手動執行一次 setupRotaryDaySystem()。
+   - 這一步會補上 v1.1.0 新欄位與設定。
+   - 不會刪除既有訂單、票券、付款紀錄。
+6. 部署 → 管理部署作業 → 編輯既有 Web App → 版本選「新版本」→ 部署。
+   ★ 請用「編輯既有部署」方式，這樣原本 Web App URL 不會改變。
 
-    async function api(action, payload = {}) {
-      const res = await fetch(DEFAULT_API_URL, {
-        method: "POST",
-        redirect: "follow",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({ action, ...payload })
-      });
-      const json = await res.json();
-      if (json.status === "error") throw new Error(json.message || "系統錯誤");
-      return json;
-    }
+v1.1.0 會新增／補齊：
+- 訂單：身分、所屬扶輪社、預填帳號末五碼
+- 系統設定：售票開關、銀行代碼、分行、其他通知 Email 等
+- 若舊票價仍為 0，會自動改為 2200。
+- 若 FRONTEND_URL 還是舊 rotaryday，會修正為：
+  https://sozajan-design.github.io/rotary-day/
 
-    const money = (n) => `NT$ ${Number(n || 0).toLocaleString("zh-TW")}`;
-    const today = () => {
-      const d = new Date();
-      const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,"0"), day = String(d.getDate()).padStart(2,"0");
-      return `${y}-${m}-${day}`;
-    };
-    const statusMap = {
-      WAITING_PAYMENT: ["等待匯款", "bg-slate-100 text-slate-600"],
-      PAYMENT_REPORTED: ["已回報・待執秘確認", "bg-amber-100 text-amber-700"],
-      PAYMENT_ISSUE: ["資料需確認", "bg-rose-100 text-rose-700"],
-      PAID: ["已確認・票券已成立", "bg-emerald-100 text-emerald-700"]
-    };
+--------------------------------------------------
+二、更新「扶輪日售票系統」GitHub Pages
+--------------------------------------------------
+Repository：rotary-day
 
-    function BrandFooter() {
-      return <footer className="text-center pb-8 pt-8 select-none">
-        <div className="text-[11px] font-black tracking-[.24em] text-slate-400">日安匕禾</div>
-        <div className="text-[9px] uppercase tracking-[.16em] text-slate-300 mt-1">Beaver Tech System</div>
-        <div className="text-[8px] font-mono text-slate-200 mt-1">BUILD {APP_VERSION}</div>
-      </footer>;
-    }
+1. 打開 rotary-day repository。
+2. 將「扶輪日售票系統_Index_v1.1.0.html」內容放入 repository 根目錄的 index.html。
+3. Commit changes。
+4. 等 GitHub Pages 重新部署。
 
-    function Shell({children, config}) {
-      return <div className="min-h-screen bg-gradient-to-b from-violet-50 via-white to-slate-50 flex flex-col">
-        <header className="bg-[#5B3F8C] text-white px-5 py-5 shadow-lg">
-          <div className="max-w-3xl mx-auto">
-            <div className="text-[11px] tracking-[.22em] uppercase text-white/70">Rotary Club of Taichung Huimin</div>
-            <h1 className="text-2xl font-black mt-1">{config?.eventName || "臺中惠民扶輪社 扶輪日"}</h1>
-          </div>
-        </header>
-        <main className="max-w-3xl mx-auto px-4 py-5 safe-bottom w-full flex-1">{children}</main>
-        <BrandFooter />
-      </div>;
-    }
+網址應為：
+https://sozajan-design.github.io/rotary-day/
 
-    function Loading({text="資料載入中..."}) {
-      return <div className="fixed inset-0 z-50 bg-black/45 backdrop-blur-sm flex items-center justify-center p-6">
-        <div className="bg-white rounded-3xl p-7 shadow-2xl w-full max-w-xs text-center">
-          <div className="flex justify-center gap-2 mb-5"><div className="loading-dot"/><div className="loading-dot"/><div className="loading-dot"/></div>
-          <div className="font-black text-slate-800">{text}</div>
-        </div>
-      </div>;
-    }
+★ 如果你目前實際使用的 GAS Web App URL 與程式檔中的 DEFAULT_API_URL 不同，
+  請把 index.html 最上方 DEFAULT_API_URL 改成目前可正常運作的 Web App URL。
 
-    function Notice({type="info", children}) {
-      const cls = type === "error" ? "bg-rose-50 text-rose-700 border-rose-200" : type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : type === "warn" ? "bg-amber-50 text-amber-800 border-amber-200" : "bg-indigo-50 text-indigo-700 border-indigo-200";
-      return <div className={`border rounded-2xl p-4 text-sm font-bold leading-6 ${cls}`}>{children}</div>;
-    }
+--------------------------------------------------
+三、更新「現場報到系統」前端
+--------------------------------------------------
+1. 到目前報到系統使用的 GitHub repository。
+2. 將「扶輪日報到系統_Index_v4.1.0.html」放入該 repo 的 index.html。
+3. Commit changes，等待 Pages 更新。
 
-    function TicketPublic({ticketId, token, config}) {
-      const [data, setData] = useState(null);
-      const [error, setError] = useState("");
-      useEffect(() => { api("get_ticket_public", { ticketId, token }).then(r => setData(r.data)).catch(e => setError(e.message)); }, [ticketId, token]);
-      if (error) return <Shell config={config}><Notice type="error">{error}</Notice></Shell>;
-      if (!data) return <Loading text="正在開啟入場券..." />;
-      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(data.ticketUrl)}`;
-      return <Shell config={{...config, eventName:data.eventName}}>
-        <div className="bg-white rounded-[2rem] ticket-shadow overflow-hidden border border-violet-100">
-          <div className="bg-gradient-to-br from-[#5B3F8C] to-[#7964A9] text-white text-center px-6 py-8">
-            <div className="text-xs tracking-[.25em] text-white/70 uppercase">Rotary Day</div>
-            <h2 className="text-3xl font-black mt-2">{data.ticketTitle}</h2>
-          </div>
-          <div className="p-7 text-center">
-            <div className="text-2xl font-black text-slate-900">{data.name}</div>
-            <div className="mt-2 text-xs font-mono text-slate-400">{data.ticketId}</div>
-            <img src={qrUrl} className="w-full max-w-[310px] aspect-square mx-auto mt-6 rounded-2xl border-8 border-white shadow-lg" alt="入場 QR Code" />
-            <div className="mt-5 text-sm font-bold text-slate-600">活動當日請出示此 QR Code 供接待人員掃描</div>
-            {(data.eventDate || data.eventTime || data.eventLocation) && <div className="mt-6 bg-slate-50 rounded-2xl p-4 text-sm text-left space-y-1">
-              {data.eventDate && <div><b>日期：</b>{data.eventDate} {data.eventTime}</div>}
-              {data.eventLocation && <div><b>地點：</b>{data.eventLocation}</div>}
-            </div>}
-            {data.isCheckedIn && <div className="mt-5 bg-emerald-50 text-emerald-700 rounded-xl p-3 font-black">✓ 已完成入場報到</div>}
-          </div>
-        </div>
-      </Shell>;
-    }
+本版報到功能沒有移除 QR Code：
+- 每一張票仍有獨立 Ticket ID + QR Code。
+- 現場掃 QR Code 後完成報到。
+- 同一張票再次掃描會顯示重複報到。
+- 本次主要更新頁尾品牌為：日安匕禾 / Beaver Tech System。
 
-    function Auth({config, onAuthed}) {
-      const [mode, setMode] = useState("login");
-      const [step, setStep] = useState("form");
-      const [loading, setLoading] = useState(false);
-      const [error, setError] = useState("");
-      const [masked, setMasked] = useState("");
-      const [form, setForm] = useState({phone:"", name:"", title:"先生", email:"", code:""});
-      const set = (k,v) => setForm(f=>({...f,[k]:v}));
+--------------------------------------------------
+四、執秘第一次登入後先做「活動設定」
+--------------------------------------------------
+售票首頁最下方 → 執秘管理入口
 
-      async function sendCode() {
-        setError(""); setLoading(true);
-        try {
-          let r;
-          if (mode === "register") {
-            r = await api("start_register", {phone:form.phone,name:form.name,title:form.title,email:form.email});
-            if (r.status === "exists") { setMode("login"); throw new Error(r.message); }
-          } else {
-            r = await api("start_login", {phone:form.phone});
-            if (r.status === "not_found") { setMode("register"); throw new Error(r.message); }
-          }
-          setMasked(r.maskedEmail || ""); setStep("otp");
-        } catch(e) { setError(e.message); } finally { setLoading(false); }
-      }
-      async function verify() {
-        setError(""); setLoading(true);
-        try {
-          const action = mode === "register" ? "verify_register" : "verify_login";
-          const r = await api(action, {phone:form.phone,code:form.code});
-          localStorage.setItem(USER_TOKEN_KEY, r.sessionToken); onAuthed(r.user, r.sessionToken);
-        } catch(e) { setError(e.message); } finally { setLoading(false); }
-      }
+登入後有三區：
+1. 待核帳
+2. 全部訂單
+3. 活動設定
 
-      return <Shell config={config}>
-        {loading && <Loading text={step === "otp" ? "正在驗證..." : "正在寄送驗證碼..."} />}
-        <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-6">
-          <div className="flex bg-slate-100 rounded-2xl p-1 mb-6">
-            <button onClick={()=>{setMode("login");setStep("form");setError("")}} className={`flex-1 py-3 rounded-xl font-black ${mode==="login"?"bg-white shadow text-[#5B3F8C]":"text-slate-400"}`}>手機登入</button>
-            <button onClick={()=>{setMode("register");setStep("form");setError("")}} className={`flex-1 py-3 rounded-xl font-black ${mode==="register"?"bg-white shadow text-[#5B3F8C]":"text-slate-400"}`}>第一次建立帳號</button>
-          </div>
-          {error && <div className="mb-4"><Notice type="error">{error}</Notice></div>}
-          {step === "form" ? <div className="space-y-4">
-            <div><label className="text-sm font-bold text-slate-600">手機號碼</label><input value={form.phone} onChange={e=>set("phone",e.target.value)} inputMode="tel" placeholder="09xxxxxxxx" className="mt-1 w-full px-4 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-2 focus:ring-violet-200 text-lg" /></div>
-            {mode === "register" && <>
-              <div><label className="text-sm font-bold text-slate-600">姓名</label><input value={form.name} onChange={e=>set("name",e.target.value)} className="mt-1 w-full px-4 py-4 rounded-2xl border border-slate-200" /></div>
-              <div><label className="text-sm font-bold text-slate-600">稱謂</label><div className="grid grid-cols-2 gap-3 mt-2">{["先生","小姐"].map(t=><button type="button" key={t} onClick={()=>set("title",t)} className={`py-3 rounded-2xl border font-black ${form.title===t?"bg-violet-50 border-violet-300 text-[#5B3F8C]":"border-slate-200 text-slate-500"}`}>{t}</button>)}</div></div>
-              <div><label className="text-sm font-bold text-slate-600">Email</label><input value={form.email} onChange={e=>set("email",e.target.value)} inputMode="email" placeholder="收據與入場券將寄到這裡" className="mt-1 w-full px-4 py-4 rounded-2xl border border-slate-200" /></div>
-            </>}
-            <button onClick={sendCode} className="w-full py-4 rounded-2xl bg-[#5B3F8C] text-white font-black text-lg shadow-lg">{mode==="register"?"建立帳號並寄驗證碼":"寄送登入驗證碼"}</button>
-          </div> : <div>
-            <div className="text-center mb-5"><div className="text-lg font-black">請查看 Email</div><div className="text-sm text-slate-400 mt-1">驗證碼已寄至 {masked}</div></div>
-            <input value={form.code} onChange={e=>set("code",e.target.value.replace(/\D/g,"").slice(0,6))} inputMode="numeric" placeholder="6 位數驗證碼" className="w-full text-center tracking-[.35em] text-2xl font-black px-4 py-4 rounded-2xl border border-slate-200" />
-            <button onClick={verify} className="w-full mt-4 py-4 rounded-2xl bg-[#5B3F8C] text-white font-black text-lg">確認登入</button>
-            <button onClick={()=>setStep("form")} className="w-full mt-2 py-3 text-slate-400 font-bold text-sm">返回修改資料</button>
-          </div>}
-        </div>
-      </Shell>;
-    }
+請先確認：
+- 每張票價
+- 活動日期／時間／地點
+- 售票是否開放
+- 銀行／銀行代碼／分行
+- 匯款戶名／帳號
+- 執秘 Email
+- 其他通知 Email（如需要）
+- 前端網址
+- 管理密碼
 
-    function PaymentModal({order, config, onClose, onDone}) {
-      const [form,setForm]=useState({transferDate:today(), amount:String(order.totalAmount||""), last5:order.prefillLast5 || order.payment?.last5 || ""});
-      const [loading,setLoading]=useState(false); const [error,setError]=useState("");
-      const token=localStorage.getItem(USER_TOKEN_KEY);
-      async function submit(){
-        setLoading(true);setError("");
-        try{
-          const r=await api("report_payment",{sessionToken:token,orderId:order.orderId,transferDate:form.transferDate,amount:form.amount,last5:form.last5});
-          if(r.warning) alert(r.warning); onDone(); onClose();
-        }catch(e){setError(e.message)}finally{setLoading(false)}
-      }
-      return <div className="fixed inset-0 z-40 bg-black/55 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
-        {loading&&<Loading text="正在通知執秘..."/>}
-        <div className="bg-white w-full max-w-md rounded-t-[2rem] sm:rounded-[2rem] p-6 max-h-[92vh] overflow-y-auto">
-          <div className="flex justify-between items-center"><h3 className="text-xl font-black">回報已匯款</h3><button onClick={onClose} className="w-10 h-10 rounded-full bg-slate-100 font-black">×</button></div>
-          <div className="mt-4 bg-violet-50 rounded-2xl p-4 text-sm leading-7">
-            <div><b>銀行：</b>{config.bankName || "尚未設定"} {config.bankBranch || ""}</div>
-            {config.bankCode&&<div><b>銀行代碼：</b>{config.bankCode}</div>}
-            <div><b>戶名：</b>{config.bankAccountName || "尚未設定"}</div>
-            <div><b>帳號：</b>{config.bankAccount || "尚未設定"}</div>
-            <div><b>本訂單應付：</b>{money(order.totalAmount)}</div>
-          </div>
-          <div className="mt-4"><Notice>這一步只會通知執秘核帳，<b>不會產生 QR Code</b>。只有執秘確認實際收到款項後，才會寄送收據與入場券。</Notice></div>
-          {error&&<div className="mt-4"><Notice type="error">{error}</Notice></div>}
-          <div className="space-y-4 mt-5">
-            <div><label className="text-sm font-bold text-slate-600">匯款日期</label><input type="date" value={form.transferDate} onChange={e=>setForm({...form,transferDate:e.target.value})} className="w-full mt-1 p-3 rounded-xl border"/></div>
-            <div><label className="text-sm font-bold text-slate-600">實際匯款金額</label><input inputMode="numeric" value={form.amount} onChange={e=>setForm({...form,amount:e.target.value.replace(/[^0-9]/g,"")})} className="w-full mt-1 p-3 rounded-xl border text-lg font-black"/></div>
-            <div><label className="text-sm font-bold text-slate-600">匯款帳號後五碼</label><input inputMode="numeric" maxLength="5" value={form.last5} onChange={e=>setForm({...form,last5:e.target.value.replace(/\D/g,"").slice(0,5)})} placeholder="例如 12345" className="w-full mt-1 p-3 rounded-xl border text-xl font-black tracking-widest"/></div>
-            <button onClick={submit} className="w-full py-4 bg-amber-500 text-white rounded-2xl font-black text-lg">我已匯款，通知執秘確認</button>
-          </div>
-        </div>
-      </div>;
-    }
+--------------------------------------------------
+五、v1.1.0 建議測試流程
+--------------------------------------------------
+A. 購票人
+1. 手機登入或建立帳號。
+2. 選身分：扶輪社友／寶眷、貴賓、其他。
+3. 若選扶輪社友／寶眷，填所屬扶輪社。
+4. 選張數、收據抬頭。
+5. 「匯款帳號後五碼」可先填，也可以留白。
+6. 建立訂單。
+7. 完成銀行轉帳後，按「我已匯款」。
+8. 匯款日期預設今天、金額預設訂單總額；輸入後五碼後送出。
 
-    function BuyerDashboard({config,user,onLogout}) {
-      const [orders,setOrders]=useState([]); const [qty,setQty]=useState(1);
-      const [receiptTitle,setReceiptTitle]=useState(`${user.name}${user.title}`);
-      const [identity,setIdentity]=useState(""); const [club,setClub]=useState(""); const [last5,setLast5]=useState("");
-      const [paymentOrder,setPaymentOrder]=useState(null); const [loading,setLoading]=useState(false); const [error,setError]=useState("");
-      const token=localStorage.getItem(USER_TOKEN_KEY);
-      const total=qty*Number(config.ticketPrice||0);
-      async function refresh(){setError("");try{const r=await api("list_my_orders",{sessionToken:token});setOrders(r.data||[])}catch(e){setError(e.message)}}
-      useEffect(()=>{refresh()},[]);
-      async function createOrder(){
-        setLoading(true);setError("");
-        try{
-          await api("create_order",{sessionToken:token,quantity:qty,receiptTitle,identity,club,last5});
-          await refresh(); setQty(1);
-        }catch(e){setError(e.message)}finally{setLoading(false)}
-      }
-      return <Shell config={config}>
-        {loading&&<Loading text="正在建立訂單..."/>}
-        {paymentOrder&&<PaymentModal order={paymentOrder} config={config} onClose={()=>setPaymentOrder(null)} onDone={refresh}/>} 
-        <div className="flex justify-between items-center mb-5"><div><div className="text-xs text-slate-400">歡迎回來</div><div className="font-black text-lg">{user.name}{user.title}</div></div><button onClick={onLogout} className="px-4 py-2 rounded-xl border bg-white text-sm font-bold text-slate-500">登出</button></div>
-        {error&&<div className="mb-4"><Notice type="error">{error}</Notice></div>}
-        {(config.eventDate||config.eventTime||config.eventLocation) && <div className="mb-4 bg-white rounded-2xl p-4 border text-sm leading-7"><b>活動資訊</b><br/>{config.eventDate} {config.eventTime}<br/>{config.eventLocation}</div>}
-        {!config.salesOpen && <div className="mb-4"><Notice type="warn">目前暫停開放新的購票訂單；既有訂單仍可查詢。</Notice></div>}
+B. 執秘測試 1：正常收到款項
+1. 進「待核帳」。
+2. 按「已收到款項・確認出票」。
+3. 檢查：
+   - 訂單變為已確認
+   - 產生正確張數 Ticket ID
+   - 寫入「活動名單」
+   - 收到電子收據 Email
+   - 收到同一封內含多張 QR Code 的票券 Email
 
-        <section className="bg-white rounded-3xl border border-violet-100 p-5 shadow-sm">
-          <div className="font-black text-[#5B3F8C]">購買扶輪日票券</div>
-          <div className="mt-1 text-xs text-slate-400">每張 {money(config.ticketPrice)}</div>
-          <div className="mt-5"><label className="text-xs font-bold text-slate-500">身分</label><div className="grid grid-cols-3 gap-2 mt-2">{["扶輪社友／寶眷","貴賓","其他"].map(v=><button type="button" key={v} onClick={()=>setIdentity(v)} className={`py-3 rounded-xl border text-xs font-black ${identity===v?"bg-violet-50 border-violet-300 text-[#5B3F8C]":"border-slate-200 text-slate-500"}`}>{v}</button>)}</div></div>
-          {identity==="扶輪社友／寶眷"&&<div className="mt-4"><label className="text-xs font-bold text-slate-500">所屬扶輪社</label><input value={club} onChange={e=>setClub(e.target.value)} placeholder="例如：臺中惠民扶輪社" className="w-full mt-1 p-3 rounded-xl border border-slate-200"/></div>}
-          <div className="flex items-center justify-between mt-5 bg-slate-50 rounded-2xl p-3">
-            <button onClick={()=>setQty(q=>Math.max(1,q-1))} className="w-12 h-12 rounded-xl bg-white shadow font-black text-2xl">−</button>
-            <div className="text-center"><div className="text-3xl font-black">{qty}</div><div className="text-[10px] text-slate-400">張票券</div></div>
-            <button onClick={()=>setQty(q=>Math.min(config.maxTicketsPerOrder||20,q+1))} className="w-12 h-12 rounded-xl bg-white shadow font-black text-2xl">＋</button>
-          </div>
-          <div className="mt-4"><label className="text-xs font-bold text-slate-500">收據抬頭</label><input value={receiptTitle} onChange={e=>setReceiptTitle(e.target.value)} className="w-full mt-1 p-3 rounded-xl border border-slate-200"/></div>
-          <div className="mt-4"><label className="text-xs font-bold text-slate-500">匯款帳號後五碼 <span className="text-slate-300">（可先填，尚未匯款可留白）</span></label><input inputMode="numeric" maxLength="5" value={last5} onChange={e=>setLast5(e.target.value.replace(/\D/g,"").slice(0,5))} placeholder="完成轉帳後可直接填寫" className="w-full mt-1 p-3 rounded-xl border border-slate-200 tracking-widest font-bold"/></div>
-          <div className="flex justify-between items-end mt-5"><div className="text-sm text-slate-500">應付總額</div><div className="text-2xl font-black text-[#5B3F8C]">{money(total)}</div></div>
-          <button onClick={createOrder} disabled={!config.ticketPrice||!config.salesOpen} className="w-full mt-5 py-4 rounded-2xl bg-[#5B3F8C] disabled:bg-slate-300 text-white font-black text-lg">建立購票訂單</button>
-        </section>
+C. 執秘測試 2：查無款項
+1. 購買人再次建立測試訂單並按「我已匯款」。
+2. 執秘按「目前查無款項」。
+3. 系統應：
+   - 保留這次付款回報歷史，不刪除
+   - 訂單回到「等待匯款」
+   - 購買人的「我已匯款」按鈕重新出現
+   - 不產生 QR Code
+   - 寄 Email 告知目前尚未查得款項
+4. 購買人完成匯款後可以再次按「我已匯款」。
 
-        <section className="mt-6">
-          <div className="flex items-center justify-between mb-3"><h2 className="font-black text-lg">我的訂單</h2><button onClick={refresh} className="text-xs font-bold text-[#5B3F8C]">更新</button></div>
-          {!orders.length ? <div className="bg-white rounded-2xl p-6 text-center text-slate-400 text-sm">目前沒有訂單</div> : <div className="space-y-4">
-            {orders.map(o=>{ const sm=statusMap[o.status]||[o.status,"bg-slate-100"]; return <div key={o.orderId} className="bg-white rounded-3xl border border-slate-100 p-5 shadow-sm">
-              <div className="flex justify-between gap-3"><div><div className="font-mono text-xs text-slate-400">{o.orderId}</div><div className="font-black mt-1">{o.quantity} 張 · {money(o.totalAmount)}</div><div className="text-xs text-slate-400 mt-1">{o.identity}{o.club?` · ${o.club}`:""}</div></div><span className={`h-fit text-[11px] font-black px-3 py-1.5 rounded-full ${sm[1]}`}>{sm[0]}</span></div>
-              <div className="text-xs text-slate-400 mt-2">建立：{o.createdAt}</div>
-              {o.status === "WAITING_PAYMENT" && <div className="mt-4">
-                {o.note&&<div className="mb-3"><Notice type="warn">{o.note}</Notice></div>}
-                <div className="bg-violet-50 rounded-2xl p-4 text-sm leading-7"><div><b>銀行：</b>{config.bankName || "尚未設定"} {config.bankBranch||""}</div>{config.bankCode&&<div><b>銀行代碼：</b>{config.bankCode}</div>}<div><b>戶名：</b>{config.bankAccountName || "尚未設定"}</div><div><b>帳號：</b>{config.bankAccount || "尚未設定"}</div></div>
-                <button onClick={()=>setPaymentOrder(o)} className="w-full mt-3 py-3 rounded-xl bg-amber-500 text-white font-black">我已匯款</button>
-              </div>}
-              {o.status === "PAYMENT_REPORTED" && <div className="mt-4"><Notice>已通知執秘核帳。確認實際入帳前，系統不會產生 QR Code。</Notice></div>}
-              {o.status === "PAYMENT_ISSUE" && <div className="mt-4"><Notice type="error">{o.note || "付款資料需要再確認，請依主辦單位通知處理。"}</Notice></div>}
-              {o.status === "PAID" && <div className="mt-4">{o.receiptId&&<div className="text-xs text-emerald-700 font-bold mb-3">電子收據：{o.receiptId}</div>}<div className="grid gap-2">{(o.tickets||[]).map(t=><a key={t.ticketId} href={t.url} target="_blank" rel="noreferrer" className="flex items-center justify-between p-3 rounded-2xl bg-violet-50 border border-violet-100"><div><div className="font-black text-[#5B3F8C]">{t.name}</div><div className="text-[10px] font-mono text-slate-400">{t.ticketId}</div></div><span className="text-[#5B3F8C] font-black">開啟票券 ›</span></a>)}</div></div>}
-            </div>})}
-          </div>}
-        </section>
-        <div className="mt-8 text-center"><a href="?admin=1" className="text-[10px] text-slate-300">執秘管理入口</a></div>
-      </Shell>;
-    }
+D. 執秘測試 3：資料有疑問
+1. 待核帳訂單按「資料有疑問」。
+2. 輸入原因，例如「應收 4,400，目前只查到 2,200」。
+3. 訂單暫停出票並通知購買人。
+4. 此筆仍留在執秘待核帳區，之後可再：
+   - 確認收到款項並出票，或
+   - 按目前查無款項退回等待匯款。
 
-    function AdminSettings({token,onSaved}) {
-      const [form,setForm]=useState(null); const [loading,setLoading]=useState(true); const [error,setError]=useState("");
-      useEffect(()=>{api("admin_get_settings",{adminToken:token}).then(r=>setForm({...r.data,newAdminPassword:""})).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[token]);
-      const set=(k,v)=>setForm(f=>({...f,[k]:v}));
-      async function save(){setLoading(true);setError("");try{const r=await api("admin_save_settings",{adminToken:token,...form});setForm({...r.data,newAdminPassword:""});alert("✅ 設定已儲存");onSaved?.()}catch(e){setError(e.message)}finally{setLoading(false)}}
-      if(!form)return <div>{loading&&<Loading text="載入系統設定..."/>}{error&&<Notice type="error">{error}</Notice>}</div>;
-      const field=(label,key,opts={})=><div><label className="text-xs font-bold text-slate-500">{label}</label><input type={opts.type||"text"} value={form[key]??""} onChange={e=>set(key,e.target.value)} placeholder={opts.placeholder||""} className="w-full mt-1 p-3 rounded-xl border border-slate-200"/></div>;
-      return <div className="bg-white rounded-3xl border p-5 shadow-sm">
-        {loading&&<Loading text="正在儲存設定..."/>}{error&&<div className="mb-4"><Notice type="error">{error}</Notice></div>}
-        <div className="flex items-center justify-between"><div><h3 className="text-xl font-black">活動／售票設定</h3><p className="text-xs text-slate-400 mt-1">修改後購票首頁會直接使用新設定，不需要改程式。</p></div><label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={!!form.salesOpen} onChange={e=>set("salesOpen",e.target.checked)}/> 開放售票</label></div>
-        <div className="grid sm:grid-cols-2 gap-4 mt-5">
-          {field("活動名稱","eventName")}{field("票券標題","ticketTitle")}{field("每張票價","ticketPrice",{type:"number"})}{field("單筆最多張數","maxTicketsPerOrder",{type:"number"})}
-          {field("活動日期","eventDate")}{field("活動時間","eventTime")}
-          <div className="sm:col-span-2">{field("活動地點","eventLocation")}</div>
-        </div>
-        <h4 className="font-black mt-7 mb-3 text-[#5B3F8C]">匯款資訊</h4>
-        <div className="grid sm:grid-cols-2 gap-4">{field("銀行","bankName")}{field("銀行代碼","bankCode")}{field("分行","bankBranch")}{field("戶名","bankAccountName")}<div className="sm:col-span-2">{field("匯款帳號","bankAccount")}</div></div>
-        <h4 className="font-black mt-7 mb-3 text-[#5B3F8C]">通知與系統</h4>
-        <div className="grid sm:grid-cols-2 gap-4">{field("執秘 Email","secretaryEmail",{type:"email"})}{field("其他通知 Email","notifyEmails",{placeholder:"多筆可用逗號分隔"})}<div className="sm:col-span-2">{field("前端網址","frontendUrl")}</div>{field("收據編號前綴","receiptPrefix")}{field("寄件顯示名稱","mailSenderName")}<div className="sm:col-span-2">{field("更換管理密碼（不修改請留白）","newAdminPassword",{type:"password"})}</div></div>
-        <button onClick={save} className="w-full mt-6 py-4 rounded-2xl bg-[#5B3F8C] text-white font-black text-lg">儲存全部設定</button>
-      </div>;
-    }
+--------------------------------------------------
+六、本版品牌
+--------------------------------------------------
+所有售票前端頁面與報到系統頁尾統一顯示：
+日安匕禾
+Beaver Tech System
 
-    function Admin({config,onConfigChanged}) {
-      const [token,setToken]=useState(localStorage.getItem(ADMIN_TOKEN_KEY)||""); const [password,setPassword]=useState("");
-      const [pending,setPending]=useState([]); const [orders,setOrders]=useState([]); const [tab,setTab]=useState("pending");
-      const [loading,setLoading]=useState(false); const [error,setError]=useState("");
-      async function verifyToken(t=token){if(!t)return false;try{await api("admin_session",{adminToken:t});return true}catch(e){localStorage.removeItem(ADMIN_TOKEN_KEY);setToken("");return false}}
-      async function loadPending(t=token){const r=await api("admin_pending_payments",{adminToken:t});setPending(r.data||[])}
-      async function loadOrders(t=token){const r=await api("admin_list_orders",{adminToken:t});setOrders(r.data||[])}
-      async function load(t=token){setLoading(true);setError("");try{await Promise.all([loadPending(t),loadOrders(t)])}catch(e){setError(e.message)}finally{setLoading(false)}}
-      useEffect(()=>{if(token)verifyToken(token).then(ok=>ok&&load(token))},[]);
-      async function login(){setLoading(true);setError("");try{const r=await api("admin_login",{password});localStorage.setItem(ADMIN_TOKEN_KEY,r.adminToken);setToken(r.adminToken);await load(r.adminToken)}catch(e){setError(e.message)}finally{setLoading(false)}}
-      async function confirm(o){if(!window.confirm(`確認銀行已收到 ${money(o.totalAmount)}，並正式產生 ${o.quantity} 張 QR 入場券？`))return;setLoading(true);setError("");try{const r=await api("admin_confirm_payment",{adminToken:token,orderId:o.orderId});alert(r.warnings?.length?"已完成出票，但：\n"+r.warnings.join("\n"):"✅ 已確認入帳，收據與票券已寄出");await load(token)}catch(e){setError(e.message)}finally{setLoading(false)}}
-      async function notReceived(o){if(!window.confirm(`確定目前查不到 ${o.buyerName}${o.title} 的款項？\n\n系統會把訂單退回「等待匯款」，並寄信請對方完成匯款後重新按「我已匯款」。`))return;setLoading(true);setError("");try{const r=await api("admin_payment_not_received",{adminToken:token,orderId:o.orderId});alert("✅ "+r.message+(r.warning?"\n"+r.warning:""));await load(token)}catch(e){setError(e.message)}finally{setLoading(false)}}
-      async function markIssue(o){const note=window.prompt("請輸入需要對方確認的原因，例如：應收 4,400 元，但目前只查到 2,200 元。", "匯款資料需要進一步確認");if(note===null)return;setLoading(true);setError("");try{await api("admin_mark_payment_issue",{adminToken:token,orderId:o.orderId,note});alert("已標記為資料需確認並通知購買人");await load(token)}catch(e){setError(e.message)}finally{setLoading(false)}}
-      async function resend(o){if(!window.confirm(`重新寄送 ${o.orderId} 的收據與全部票券？`))return;setLoading(true);try{const r=await api("admin_resend_order_email",{adminToken:token,orderId:o.orderId});alert("✅ "+r.message)}catch(e){setError(e.message)}finally{setLoading(false)}}
-      function logout(){localStorage.removeItem(ADMIN_TOKEN_KEY);setToken("");setPassword("")}
-
-      return <Shell config={config}>
-        {loading&&<Loading text="執秘資料處理中..."/>}
-        <div className="mb-4 flex justify-between items-center"><a href="./" className="text-sm font-bold text-[#5B3F8C]">← 返回購票首頁</a>{token&&<button onClick={logout} className="text-xs font-bold text-slate-400">管理端登出</button>}</div>
-        {!token ? <div className="bg-white p-6 rounded-3xl border shadow-sm max-w-md mx-auto"><h2 className="text-2xl font-black">執秘管理端</h2><p className="text-sm text-slate-400 mt-1">核對實際入帳後，才能建立 QR Code 入場券。</p>{error&&<div className="mt-4"><Notice type="error">{error}</Notice></div>}<input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="管理密碼" className="w-full mt-5 p-4 rounded-2xl border"/><button onClick={login} className="w-full mt-3 py-4 rounded-2xl bg-[#5B3F8C] text-white font-black">登入管理端</button></div> : <>
-          <div className="grid grid-cols-3 gap-2 mb-5 bg-white rounded-2xl p-1 border">{[["pending","待核帳"],["orders","全部訂單"],["settings","活動設定"]].map(([k,l])=><button key={k} onClick={()=>setTab(k)} className={`py-3 rounded-xl text-sm font-black ${tab===k?"bg-[#5B3F8C] text-white":"text-slate-400"}`}>{l}{k==="pending"&&pending.length?` (${pending.length})`:""}</button>)}</div>
-          {error&&<div className="mb-4"><Notice type="error">{error}</Notice></div>}
-          {tab==="pending"&&<><div className="flex justify-between items-center mb-4"><div><h2 className="text-2xl font-black">待核帳款項</h2><p className="text-xs text-slate-400">購買人已按「我已匯款」，但尚未出票</p></div><button onClick={()=>load(token)} className="px-3 py-2 bg-white rounded-xl border text-xs font-bold">更新</button></div>
-            {!pending.length?<div className="bg-white rounded-3xl p-8 text-center text-slate-400">目前沒有待核帳資料</div>:<div className="space-y-4">{pending.map(o=><div key={o.orderId} className="bg-white rounded-3xl p-5 border shadow-sm">
-              <div className="flex justify-between"><div><div className="font-black text-lg">{o.buyerName}{o.title}</div><div className="text-xs font-mono text-slate-400">{o.orderId}</div><div className="text-xs text-slate-400 mt-1">{o.identity}{o.club?` · ${o.club}`:""}</div></div><div className="text-right"><div className="text-xs text-slate-400">應收</div><div className="text-xl font-black text-[#5B3F8C]">{money(o.totalAmount)}</div></div></div>
-              <div className="grid grid-cols-2 gap-3 mt-4 text-sm"><div className="bg-slate-50 rounded-xl p-3"><div className="text-[10px] text-slate-400">張數</div><b>{o.quantity} 張</b></div><div className={`rounded-xl p-3 ${Number(o.transferAmount)===Number(o.totalAmount)?"bg-emerald-50":"bg-rose-50"}`}><div className="text-[10px] text-slate-400">回報金額</div><b>{money(o.transferAmount)}</b></div><div className="bg-slate-50 rounded-xl p-3"><div className="text-[10px] text-slate-400">匯款日期</div><b>{o.transferDate}</b></div><div className="bg-amber-50 rounded-xl p-3"><div className="text-[10px] text-slate-400">帳號末五碼</div><b className="text-lg tracking-widest">{o.last5}</b></div></div>
-              <div className="mt-3 text-xs text-slate-400">{o.phone} · {o.email}</div>
-              {o.note&&<div className="mt-3"><Notice type="warn">{o.note}</Notice></div>}
-              <button onClick={()=>confirm(o)} className="w-full mt-4 py-4 rounded-2xl bg-emerald-600 text-white font-black text-lg">✓ 已收到款項・確認出票</button>
-              <div className="grid grid-cols-2 gap-2 mt-2"><button onClick={()=>notReceived(o)} className="py-3 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 font-black text-sm">目前查無款項</button><button onClick={()=>markIssue(o)} className="py-3 rounded-xl bg-amber-50 text-amber-800 border border-amber-200 font-black text-sm">資料有疑問</button></div>
-            </div>)}</div>}
-          </>}
-          {tab==="orders"&&<div><div className="flex justify-between items-center mb-4"><div><h2 className="text-2xl font-black">全部訂單</h2><p className="text-xs text-slate-400">顯示最近 300 筆</p></div><button onClick={()=>loadOrders(token)} className="px-3 py-2 bg-white rounded-xl border text-xs font-bold">更新</button></div><div className="space-y-3">{orders.map(o=>{const sm=statusMap[o.status]||[o.status,"bg-slate-100"];return <div key={o.orderId} className="bg-white rounded-2xl p-4 border"><div className="flex justify-between gap-2"><div><div className="font-black">{o.buyerName}{o.title}</div><div className="text-[10px] font-mono text-slate-400">{o.orderId}</div><div className="text-xs text-slate-400 mt-1">{o.quantity} 張 · {money(o.totalAmount)} · {o.identity}{o.club?` · ${o.club}`:""}</div></div><span className={`h-fit text-[10px] font-black px-2 py-1 rounded-full ${sm[1]}`}>{sm[0]}</span></div>{o.note&&<div className="text-xs text-rose-600 mt-2">{o.note}</div>}{o.status==="PAID"&&<button onClick={()=>resend(o)} className="mt-3 px-3 py-2 rounded-xl bg-violet-50 text-[#5B3F8C] font-black text-xs">重新寄送收據＋票券</button>}</div>})}</div></div>}
-          {tab==="settings"&&<AdminSettings token={token} onSaved={onConfigChanged}/>} 
-        </>}
-      </Shell>;
-    }
-
-    function App(){
-      const params=new URLSearchParams(location.search); const ticketId=params.get("ticket"); const ticketToken=params.get("k"); const adminMode=params.get("admin")==="1";
-      const [config,setConfig]=useState(null); const [user,setUser]=useState(null); const [checking,setChecking]=useState(true);
-      async function refreshConfig(){try{const r=await api("get_config");setConfig(r.data)}catch(e){setConfig({eventName:"臺中惠民扶輪社 扶輪日",ticketTitle:"扶輪日入場券",ticketPrice:0,maxTicketsPerOrder:20,salesOpen:true})}}
-      useEffect(()=>{refreshConfig()},[]);
-      useEffect(()=>{if(ticketId||adminMode){setChecking(false);return;}const t=localStorage.getItem(USER_TOKEN_KEY);if(!t){setChecking(false);return;}api("session_me",{sessionToken:t}).then(r=>setUser(r.user)).catch(()=>localStorage.removeItem(USER_TOKEN_KEY)).finally(()=>setChecking(false))},[]);
-      if(ticketId&&ticketToken)return <TicketPublic ticketId={ticketId} token={ticketToken} config={config}/>;
-      if(adminMode)return <Admin config={config} onConfigChanged={refreshConfig}/>;
-      if(checking||!config)return <Loading/>;
-      if(!user)return <Auth config={config} onAuthed={(u)=>setUser(u)}/>;
-      return <BuyerDashboard config={config} user={user} onLogout={()=>{const t=localStorage.getItem(USER_TOKEN_KEY);api("logout",{sessionToken:t}).catch(()=>{});localStorage.removeItem(USER_TOKEN_KEY);setUser(null)}}/>;
-    }
-
-    ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
-  </script>
-</body>
-</html>
+==================================================
