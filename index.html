@@ -33,7 +33,7 @@
 
     // 若您沿用既有 GAS「管理部署 → 編輯 → 新版本」，Web App 網址不會改變。
     const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbwTBjHVnzYJW53_inuVIaMJ0JZYpChnKsHJQkAmTB9uvV8BQPBuVTcSxN67TycpDkt8/exec";
-    const APP_VERSION = "v1.4.1";
+    const APP_VERSION = "v1.5.0";
     const USER_TOKEN_KEY = "huimin_rotaryday_user_token";
     const ADMIN_TOKEN_KEY = "huimin_rotaryday_admin_token";
     const USER_PROFILE_CACHE_KEY = "huimin_rotaryday_user_profile";
@@ -135,7 +135,8 @@
       WAITING_PAYMENT: ["等待匯款", "bg-slate-100 text-slate-600"],
       PAYMENT_REPORTED: ["已回報・待執秘確認", "bg-amber-100 text-amber-700"],
       PAYMENT_ISSUE: ["資料需確認", "bg-rose-100 text-rose-700"],
-      PAID: ["已確認・票券已成立", "bg-emerald-100 text-emerald-700"]
+      PAID: ["已確認・票券已成立", "bg-emerald-100 text-emerald-700"],
+      CANCELLED: ["已取消", "bg-slate-100 text-slate-400"]
     };
 
     function BrandFooter() {
@@ -175,7 +176,8 @@
     }
 
     function ticketShareText(ticket) {
-      return `臺中惠民扶輪社 扶輪日入場券\n${ticket.name}\n請開啟以下連結查看您的 QR Code 入場券：\n${ticket.url || ticket.ticketUrl}`;
+      const hello = ticket.recipientName ? `${ticket.recipientName}您好，\n` : "";
+      return `${hello}這是您的「臺中惠民扶輪社 扶輪日入場券」。\n${ticket.name}\n活動當日請開啟以下連結出示 QR Code：\n${ticket.url || ticket.ticketUrl}`;
     }
 
     async function shareTicket(ticket) {
@@ -233,6 +235,7 @@
           </div>
           <div className="p-7 text-center">
             <div className="text-2xl font-black text-slate-900">{data.name}</div>
+            {data.recipientName&&<div className="mt-2 inline-flex items-center px-4 py-2 rounded-full bg-amber-50 text-amber-700 font-black text-sm">🎁 受贈人：{data.recipientName}</div>}
             <div className="mt-2 text-xs font-mono text-slate-400">{data.ticketId}</div>
             <div className="mt-6 bg-white border-2 border-violet-100 rounded-[1.75rem] p-4 max-w-[350px] mx-auto shadow-sm">
               <img src={qrUrl} className="w-full aspect-square rounded-xl" alt="入場 QR Code" />
@@ -558,7 +561,9 @@
     function BuyerDashboard({config,user,onLogout}) {
       const ordersCacheKey = ORDERS_CACHE_PREFIX + user.userId;
       const [orders,setOrders]=useState(()=>readJson(ordersCacheKey, [])); const [qty,setQty]=useState(1);
-      const [receiptTitle,setReceiptTitle]=useState(`${user.name}${user.title}`);
+      const defaultReceiptTitle=`${user.name}${user.title}`;
+      const [customReceipt,setCustomReceipt]=useState(false);
+      const [receiptTitle,setReceiptTitle]=useState(defaultReceiptTitle);
       const [identity,setIdentity]=useState(""); const [club,setClub]=useState(""); const [last5,setLast5]=useState("");
       const [paymentOrder,setPaymentOrder]=useState(null); const [loading,setLoading]=useState(false); const [error,setError]=useState("");
       const token=getStoredUserToken();
@@ -572,12 +577,86 @@
         }catch(e){setError("目前連線較慢，已保留上次資料。請稍後按「更新」即可。")}
       }
       useEffect(()=>{refresh()},[]);
+      function focusField(id){
+        setTimeout(()=>{
+          const el=document.getElementById(id);
+          if(el){el.scrollIntoView({behavior:"smooth",block:"center"});setTimeout(()=>el.focus(),250);}
+        },80);
+      }
       async function createOrder(){
-        setLoading(true);setError("");
+        setError("");
+        if(!identity){
+          alert("請先選擇購票身分，才能建立訂單。");
+          return;
+        }
+        if(identity==="扶輪社友／寶眷"&&!club.trim()){
+          alert("請填寫所屬扶輪社\n\n您選擇的是「扶輪社友／寶眷」，請先填寫您的扶輪社社名，否則訂單無法送出。");
+          focusField("clubInput");
+          return;
+        }
+        const finalReceiptTitle=customReceipt?receiptTitle.trim():defaultReceiptTitle;
+        if(customReceipt&&!finalReceiptTitle){
+          alert("請填寫電子收據繳款人名稱\n\n您已選擇使用其他繳款人名稱，請先輸入姓名或收據抬頭，才能建立訂單。");
+          focusField("receiptTitleInput");
+          return;
+        }
+        setLoading(true);
         try{
-          await api("create_order",{sessionToken:token,quantity:qty,receiptTitle,identity,club,last5});
-          await refresh(); setQty(1);
+          await api("create_order",{sessionToken:token,quantity:qty,receiptTitle:finalReceiptTitle,identity,club:club.trim(),last5});
+          await refresh(); setQty(1); setCustomReceipt(false); setReceiptTitle(defaultReceiptTitle);
         }catch(e){setError(e.message)}finally{setLoading(false)}
+      }
+      async function deleteOrder(o){
+        if(!window.confirm(`確定要刪除這筆尚未匯款的訂單嗎？
+
+訂單：${o.orderId}
+金額：${money(o.totalAmount)}
+
+⚠️ 如果您已經完成轉帳，請按「取消」，不要刪除訂單，請改按「我已匯款」。
+
+刪除後無法復原。`)) return;
+        setLoading(true); setError("");
+        try{
+          const r=await api("delete_order",{sessionToken:token,orderId:o.orderId});
+          alert("✅ "+r.message);
+          await refresh();
+        }catch(e){alert("無法刪除訂單："+e.message);setError(e.message)}finally{setLoading(false)}
+      }
+      async function saveRecipient(ticket, options={shareAfter:false,copyAfter:false}){
+        if(ticket.checkInTime){ alert("此票券已完成報到，不能再修改受贈人。"); return; }
+        const current=ticket.recipientName||"";
+        const label=(options.shareAfter||options.copyAfter)&&!current?"這張票要送給誰？\n\n請輸入受贈人姓名：":"請輸入這張票的受贈人姓名：";
+        const input=window.prompt(label,current);
+        if(input===null) return;
+        const name=input.trim();
+        if(!name){
+          if(!current){ alert("請先輸入受贈人姓名，才能記錄這張票送給誰。"); return; }
+          if(!window.confirm("要清除目前的受贈人紀錄嗎？")) return;
+        }
+        setLoading(true); setError("");
+        try{
+          await api("set_ticket_recipient",{sessionToken:token,ticketId:ticket.ticketId,recipientName:name});
+          const updated={...ticket,recipientName:name};
+          await refresh();
+          if(options.shareAfter && name) await shareTicket(updated);
+          if(options.copyAfter && name) await copyTicketLink(updated);
+        }catch(e){alert(e.message);setError(e.message)}finally{setLoading(false)}
+      }
+      async function shareManagedTicket(ticket){
+        if(ticket.checkInTime){ alert("此票券已完成報到，不能再轉送。"); return; }
+        if(!ticket.recipientName){
+          await saveRecipient(ticket,{shareAfter:true});
+          return;
+        }
+        await shareTicket(ticket);
+      }
+      async function copyManagedTicket(ticket){
+        if(ticket.checkInTime){ alert("此票券已完成報到，不能再轉送。"); return; }
+        if(!ticket.recipientName){
+          await saveRecipient(ticket,{copyAfter:true});
+          return;
+        }
+        await copyTicketLink(ticket);
       }
       return <Shell config={config}>
         {loading&&<Loading text="正在建立訂單..."/>}
@@ -591,13 +670,22 @@
           <div className="font-black text-[#5B3F8C] text-xl sm:text-base">購買扶輪日票券</div>
           <div className="mt-1 text-sm sm:text-xs text-slate-400">每張 {money(config.ticketPrice)}</div>
           <div className="mt-5"><label className="text-sm sm:text-xs font-bold text-slate-600">身分</label><div className="grid grid-cols-3 gap-2 mt-2">{["扶輪社友／寶眷","貴賓","其他"].map(v=><button type="button" key={v} onClick={()=>setIdentity(v)} className={`py-4 rounded-2xl border text-sm sm:text-xs font-black ${identity===v?"bg-violet-50 border-violet-300 text-[#5B3F8C]":"border-slate-200 text-slate-500"}`}>{v}</button>)}</div></div>
-          {identity==="扶輪社友／寶眷"&&<div className="mt-4"><label className="text-sm sm:text-xs font-bold text-slate-600">所屬扶輪社</label><input value={club} onChange={e=>setClub(e.target.value)} placeholder="例如：臺中惠民扶輪社" className="w-full mt-1 p-4 rounded-2xl border-2 border-slate-200"/></div>}
+          {identity==="扶輪社友／寶眷"&&<div className="mt-4"><label className="text-sm sm:text-xs font-bold text-slate-600">所屬扶輪社 <span className="text-rose-500">＊必填</span></label><input id="clubInput" value={club} onChange={e=>setClub(e.target.value)} placeholder="例如：臺中惠民扶輪社" className="w-full mt-1 p-4 rounded-2xl border-2 border-slate-200 focus:border-violet-400 outline-none"/><div className="mt-1 text-xs text-rose-500">選擇「扶輪社友／寶眷」時，必須填寫扶輪社社名。</div></div>}
           <div className="flex items-center justify-between mt-5 bg-slate-50 rounded-[1.6rem] p-4">
             <button onClick={()=>setQty(q=>Math.max(1,q-1))} className="w-16 h-16 rounded-2xl bg-white shadow font-black text-3xl">−</button>
             <div className="text-center"><div className="text-4xl sm:text-3xl font-black">{qty}</div><div className="text-xs text-slate-400">張票券</div></div>
             <button onClick={()=>setQty(q=>Math.min(config.maxTicketsPerOrder||20,q+1))} className="w-16 h-16 rounded-2xl bg-white shadow font-black text-3xl">＋</button>
           </div>
-          <div className="mt-4 bg-emerald-50 border border-emerald-100 rounded-2xl p-4"><div className="text-sm font-bold text-emerald-700">電子收據繳款人名稱</div><div className="text-lg font-black text-emerald-800 mt-1">{user.name}{user.title}</div><div className="text-xs text-emerald-600 mt-1">確認收款後，電子收據會直接使用您的登入姓名。</div></div>
+          <div className="mt-4 bg-emerald-50 border border-emerald-100 rounded-2xl p-4">
+            <div className="text-sm font-bold text-emerald-700">電子收據繳款人名稱</div>
+            <div className="text-lg font-black text-emerald-800 mt-1">{customReceipt?(receiptTitle.trim()||"尚未填寫"):defaultReceiptTitle}</div>
+            <div className="text-xs text-emerald-600 mt-1">{customReceipt?"收據會使用您下方填寫的名稱。":"預設使用您的登入姓名；若代別人購票，可改填其他繳款人。"}</div>
+            <label className="mt-4 flex items-center gap-3 bg-white/80 border border-emerald-200 rounded-2xl p-3 cursor-pointer">
+              <input type="checkbox" checked={customReceipt} onChange={e=>{const checked=e.target.checked;setCustomReceipt(checked);setReceiptTitle(checked?"":defaultReceiptTitle);}} className="w-5 h-5 accent-emerald-600"/>
+              <span className="font-black text-emerald-800">填寫其他收據繳款人名稱</span>
+            </label>
+            {customReceipt&&<div className="mt-3"><label className="text-sm font-bold text-emerald-800">收據繳款人名稱 <span className="text-rose-500">＊必填</span></label><input id="receiptTitleInput" value={receiptTitle} onChange={e=>setReceiptTitle(e.target.value)} maxLength="80" placeholder="例如：王小明先生／○○公司" className="w-full mt-1 p-4 rounded-2xl border-2 border-emerald-200 bg-white focus:border-emerald-500 outline-none text-lg font-bold"/><div className="text-xs text-emerald-600 mt-1">這個名稱只會使用在電子收據，不會改變您的帳號姓名。</div></div>}
+          </div>
           <div className="mt-4"><label className="text-sm sm:text-xs font-bold text-slate-600">匯款帳號後五碼 <span className="text-slate-300">（可先填，尚未匯款可留白）</span></label><input inputMode="numeric" maxLength="5" value={last5} onChange={e=>setLast5(e.target.value.replace(/\D/g,"").slice(0,5))} placeholder="完成轉帳後可直接填寫" className="w-full mt-1 p-4 rounded-2xl border-2 border-slate-200 tracking-[.28em] font-bold text-lg"/></div>
           <div className="flex justify-between items-end mt-6 bg-violet-50 rounded-[1.5rem] p-4"><div className="text-base sm:text-sm text-slate-500">應付總額</div><div className="text-3xl sm:text-2xl font-black text-[#5B3F8C]">{money(total)}</div></div>
           <button onClick={createOrder} disabled={!config.ticketPrice||!config.salesOpen} className="w-full mt-5 py-5 rounded-3xl bg-[#5B3F8C] disabled:bg-slate-300 text-white font-black text-xl sm:text-lg shadow-lg">建立購票訂單</button>
@@ -612,11 +700,28 @@
               {o.status === "WAITING_PAYMENT" && <div className="mt-4">
                 {o.note&&<div className="mb-3"><Notice type="warn">{o.note}</Notice></div>}
                 <div className="bg-violet-50 rounded-2xl p-4 text-sm leading-7"><div><b>銀行：</b>{config.bankName || "尚未設定"} {config.bankBranch||""}</div>{config.bankCode&&<div><b>銀行代碼：</b>{config.bankCode}</div>}<div><b>戶名：</b>{config.bankAccountName || "尚未設定"}</div><div><b>帳號：</b>{config.bankAccount || "尚未設定"}</div></div>
-                <button onClick={()=>setPaymentOrder(o)} className="w-full mt-4 py-4 rounded-2xl bg-amber-500 text-white font-black text-lg shadow">我已匯款</button>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-4">
+                  <button onClick={()=>setPaymentOrder(o)} className="py-4 rounded-2xl bg-amber-500 text-white font-black text-lg shadow">我已匯款</button>
+                  {!o.payment&&<button onClick={()=>deleteOrder(o)} className="py-4 rounded-2xl bg-white border-2 border-rose-200 text-rose-600 font-black text-lg">刪除訂單</button>}
+                </div>
+                {!o.payment&&<div className="mt-2 text-xs text-slate-400 text-center">只有尚未回報匯款的訂單可以刪除。</div>}
               </div>}
               {o.status === "PAYMENT_REPORTED" && <div className="mt-4"><Notice>已通知執秘核帳。確認實際入帳前，系統不會產生 QR Code。</Notice></div>}
               {o.status === "PAYMENT_ISSUE" && <div className="mt-4"><Notice type="error">{o.note || "付款資料需要再確認，請依主辦單位通知處理。"}</Notice></div>}
-              {o.status === "PAID" && <div className="mt-4">{o.receiptId&&<div className="text-sm text-emerald-700 font-black mb-3 bg-emerald-50 rounded-xl px-3 py-2">✓ 電子收據：{o.receiptId} 已寄送至您的 Email</div>}<div className="grid gap-3">{(o.tickets||[]).map(t=><div key={t.ticketId} className="p-4 rounded-2xl bg-violet-50 border border-violet-100"><div className="flex items-start justify-between gap-3"><div><div className="font-black text-[#5B3F8C] text-xl sm:text-base">{t.name}</div><div className="text-[10px] font-mono text-slate-400">{t.ticketId}</div></div>{t.checkInTime?<span className="shrink-0 text-xs font-black bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-full">已使用</span>:<span className="shrink-0 text-xs font-black bg-white text-violet-500 px-3 py-1.5 rounded-full">可轉送</span>}</div><div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3"><a href={t.url} target="_blank" rel="noreferrer" className="text-center py-3 rounded-xl bg-[#5B3F8C] text-white font-black">開啟票券</a><button disabled={!!t.checkInTime} onClick={()=>shareTicket(t)} className="py-3 rounded-xl bg-[#06C755] disabled:bg-slate-200 disabled:text-slate-400 text-white font-black">轉送票券</button><button disabled={!!t.checkInTime} onClick={()=>copyTicketLink(t)} className="py-3 rounded-xl bg-white disabled:bg-slate-100 disabled:text-slate-300 border border-violet-200 text-[#5B3F8C] font-black">複製連結</button></div></div>)}</div></div>}
+              {o.status === "PAID" && <div className="mt-4">
+                {o.receiptId&&<div className="text-sm text-emerald-700 font-black mb-3 bg-emerald-50 rounded-xl px-3 py-2">✓ 電子收據：{o.receiptId} 已寄送至您的 Email</div>}
+                {(()=>{const ts=o.tickets||[];const used=ts.filter(t=>!!t.checkInTime).length;const assigned=ts.filter(t=>!!t.recipientName).length;const unassigned=ts.filter(t=>!t.recipientName&&!t.checkInTime).length;return <div className="mb-3 bg-amber-50 border border-amber-100 rounded-2xl p-3 text-sm font-bold text-amber-800">🎁 票券分配：共 {ts.length} 張｜已指定 {assigned} 張｜尚未分配 {unassigned} 張｜已報到 {used} 張</div>})()}
+                <div className="grid gap-3">{(o.tickets||[]).map(t=><div key={t.ticketId} className="p-4 rounded-2xl bg-violet-50 border border-violet-100">
+                  <div className="flex items-start justify-between gap-3"><div><div className="font-black text-[#5B3F8C] text-xl sm:text-base">{t.name}</div><div className="text-[10px] font-mono text-slate-400">{t.ticketId}</div></div>{t.checkInTime?<span className="shrink-0 text-xs font-black bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-full">已使用</span>:t.recipientName?<span className="shrink-0 text-xs font-black bg-amber-100 text-amber-700 px-3 py-1.5 rounded-full">已分配</span>:<span className="shrink-0 text-xs font-black bg-white text-violet-500 px-3 py-1.5 rounded-full">尚未分配</span>}</div>
+                  <div className={`mt-3 rounded-xl px-3 py-2 text-sm font-bold ${t.recipientName?"bg-white text-amber-700":"bg-white/70 text-slate-400"}`}>{t.recipientName?`🎁 已指定給：${t.recipientName}`:"這張票還沒有指定受贈人"}</div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+                    <a href={t.url} target="_blank" rel="noreferrer" className="text-center py-3 rounded-xl bg-[#5B3F8C] text-white font-black">開啟票券</a>
+                    <button disabled={!!t.checkInTime} onClick={()=>saveRecipient(t)} className="py-3 rounded-xl bg-amber-100 disabled:bg-slate-200 disabled:text-slate-400 text-amber-800 font-black">{t.recipientName?"修改受贈人":"指定給誰"}</button>
+                    <button disabled={!!t.checkInTime} onClick={()=>shareManagedTicket(t)} className="py-3 rounded-xl bg-[#06C755] disabled:bg-slate-200 disabled:text-slate-400 text-white font-black">轉送票券</button>
+                    <button disabled={!!t.checkInTime} onClick={()=>copyManagedTicket(t)} className="py-3 rounded-xl bg-white disabled:bg-slate-100 disabled:text-slate-300 border border-violet-200 text-[#5B3F8C] font-black">複製連結</button>
+                  </div>
+                </div>)}</div>
+              </div>}
             </div>})}
           </div>}
         </section>
