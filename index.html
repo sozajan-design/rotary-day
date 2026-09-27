@@ -26,7 +26,7 @@
 
     // 若您沿用既有 GAS「管理部署 → 編輯 → 新版本」，Web App 網址不會改變。
     const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbwTBjHVnzYJW53_inuVIaMJ0JZYpChnKsHJQkAmTB9uvV8BQPBuVTcSxN67TycpDkt8/exec";
-    const APP_VERSION = "v1.1.0";
+    const APP_VERSION = "v1.1.1";
     const USER_TOKEN_KEY = "huimin_rotaryday_user_token";
     const ADMIN_TOKEN_KEY = "huimin_rotaryday_admin_token";
 
@@ -126,9 +126,16 @@
       const [masked, setMasked] = useState("");
       const [form, setForm] = useState({phone:"", name:"", title:"先生", email:"", code:""});
       const set = (k,v) => setForm(f=>({...f,[k]:v}));
+      const phoneValid = /^09\d{8}$/.test(form.phone);
+      const setPhone = (v) => set("phone", String(v || "").replace(/\D/g,"").slice(0,10));
 
       async function sendCode() {
-        setError(""); setLoading(true);
+        setError("");
+        if (!phoneValid) {
+          setError("手機號碼必須填滿 10 碼數字，並以 09 開頭，例如：0912345678");
+          return;
+        }
+        setLoading(true);
         try {
           let r;
           if (mode === "register") {
@@ -159,13 +166,29 @@
           </div>
           {error && <div className="mb-4"><Notice type="error">{error}</Notice></div>}
           {step === "form" ? <div className="space-y-4">
-            <div><label className="text-sm font-bold text-slate-600">手機號碼</label><input value={form.phone} onChange={e=>set("phone",e.target.value)} inputMode="tel" placeholder="09xxxxxxxx" className="mt-1 w-full px-4 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-2 focus:ring-violet-200 text-lg" /></div>
+            <div>
+              <label className="text-sm font-bold text-slate-600">手機號碼</label>
+              <input
+                value={form.phone}
+                onChange={e=>setPhone(e.target.value)}
+                inputMode="numeric"
+                autoComplete="tel"
+                maxLength={10}
+                placeholder="例如：0912345678"
+                className={`mt-1 w-full px-4 py-4 rounded-2xl border outline-none focus:ring-2 text-lg tracking-wide ${form.phone && !phoneValid ? "border-red-300 focus:ring-red-100" : "border-slate-200 focus:ring-violet-200"}`}
+              />
+              <div className="mt-2 flex items-center justify-between gap-3 text-xs">
+                <span className={form.phone && !phoneValid ? "text-red-500 font-bold" : "text-slate-400"}>請輸入 09 開頭的 10 碼手機號碼，例如：0912345678</span>
+                <span className={`shrink-0 font-mono font-bold ${phoneValid ? "text-emerald-600" : "text-slate-400"}`}>{form.phone.length}/10</span>
+              </div>
+              {form.phone.length === 10 && !phoneValid && <div className="mt-2 text-sm font-black text-red-500">手機號碼格式不正確，第一、二碼必須是 09。</div>}
+            </div>
             {mode === "register" && <>
               <div><label className="text-sm font-bold text-slate-600">姓名</label><input value={form.name} onChange={e=>set("name",e.target.value)} className="mt-1 w-full px-4 py-4 rounded-2xl border border-slate-200" /></div>
               <div><label className="text-sm font-bold text-slate-600">稱謂</label><div className="grid grid-cols-2 gap-3 mt-2">{["先生","小姐"].map(t=><button type="button" key={t} onClick={()=>set("title",t)} className={`py-3 rounded-2xl border font-black ${form.title===t?"bg-violet-50 border-violet-300 text-[#5B3F8C]":"border-slate-200 text-slate-500"}`}>{t}</button>)}</div></div>
               <div><label className="text-sm font-bold text-slate-600">Email</label><input value={form.email} onChange={e=>set("email",e.target.value)} inputMode="email" placeholder="收據與入場券將寄到這裡" className="mt-1 w-full px-4 py-4 rounded-2xl border border-slate-200" /></div>
             </>}
-            <button onClick={sendCode} className="w-full py-4 rounded-2xl bg-[#5B3F8C] text-white font-black text-lg shadow-lg">{mode==="register"?"建立帳號並寄驗證碼":"寄送登入驗證碼"}</button>
+            <button disabled={!phoneValid || loading} onClick={sendCode} className={`w-full py-4 rounded-2xl text-white font-black text-lg shadow-lg transition ${phoneValid && !loading ? "bg-[#5B3F8C] active:scale-[.99]" : "bg-slate-300 cursor-not-allowed shadow-none"}`}>{mode==="register"?"建立帳號並寄驗證碼":"寄送登入驗證碼"}</button>
           </div> : <div>
             <div className="text-center mb-5"><div className="text-lg font-black">請查看 Email</div><div className="text-sm text-slate-400 mt-1">驗證碼已寄至 {masked}</div></div>
             <input value={form.code} onChange={e=>set("code",e.target.value.replace(/\D/g,"").slice(0,6))} inputMode="numeric" placeholder="6 位數驗證碼" className="w-full text-center tracking-[.35em] text-2xl font-black px-4 py-4 rounded-2xl border border-slate-200" />
