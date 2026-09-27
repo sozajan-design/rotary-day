@@ -26,12 +26,15 @@
 
     // 若您沿用既有 GAS「管理部署 → 編輯 → 新版本」，Web App 網址不會改變。
     const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbwTBjHVnzYJW53_inuVIaMJ0JZYpChnKsHJQkAmTB9uvV8BQPBuVTcSxN67TycpDkt8/exec";
-    const APP_VERSION = "v1.1.2";
+    const APP_VERSION = "v1.1.3";
     const USER_TOKEN_KEY = "huimin_rotaryday_user_token";
     const ADMIN_TOKEN_KEY = "huimin_rotaryday_admin_token";
     const USER_PROFILE_CACHE_KEY = "huimin_rotaryday_user_profile";
     const CONFIG_CACHE_KEY = "huimin_rotaryday_config";
     const ORDERS_CACHE_PREFIX = "huimin_rotaryday_orders_";
+    const LAST_PHONE_KEY = "huimin_rotaryday_last_phone";
+    const DEVICE_TOKEN_COOKIE = "huimin_rotaryday_device_token";
+    const TRUST_DEVICE_DAYS = 365;
 
     function readJson(key, fallback = null) {
       try {
@@ -41,6 +44,46 @@
     }
     function writeJson(key, value) {
       try { localStorage.setItem(key, JSON.stringify(value)); } catch(e) {}
+    }
+    function getCookie(name) {
+      try {
+        const prefix = encodeURIComponent(name) + "=";
+        const hit = document.cookie.split("; ").find(x => x.startsWith(prefix));
+        return hit ? decodeURIComponent(hit.slice(prefix.length)) : "";
+      } catch(e) { return ""; }
+    }
+    function setCookie(name, value, days = TRUST_DEVICE_DAYS) {
+      try {
+        const maxAge = Math.max(1, Math.floor(days * 86400));
+        document.cookie = `${encodeURIComponent(name)}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; SameSite=Lax; Secure`;
+      } catch(e) {}
+    }
+    function clearCookie(name) {
+      try { document.cookie = `${encodeURIComponent(name)}=; Max-Age=0; Path=/; SameSite=Lax; Secure`; } catch(e) {}
+    }
+    function getStoredUserToken() {
+      let token = "";
+      try { token = localStorage.getItem(USER_TOKEN_KEY) || ""; } catch(e) {}
+      if (token) return token;
+      token = getCookie(DEVICE_TOKEN_COOKIE);
+      if (token) {
+        try { localStorage.setItem(USER_TOKEN_KEY, token); } catch(e) {}
+      }
+      return token;
+    }
+    function persistUserSession(token, user) {
+      if (!token) return;
+      try { localStorage.setItem(USER_TOKEN_KEY, token); } catch(e) {}
+      setCookie(DEVICE_TOKEN_COOKIE, token, TRUST_DEVICE_DAYS);
+      if (user) {
+        writeJson(USER_PROFILE_CACHE_KEY, user);
+        if (user.phone) { try { localStorage.setItem(LAST_PHONE_KEY, user.phone); } catch(e) {} }
+      }
+    }
+    function clearUserSession() {
+      try { localStorage.removeItem(USER_TOKEN_KEY); } catch(e) {}
+      try { localStorage.removeItem(USER_PROFILE_CACHE_KEY); } catch(e) {}
+      clearCookie(DEVICE_TOKEN_COOKIE);
     }
     function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
@@ -157,7 +200,7 @@
       const [loading, setLoading] = useState(false);
       const [error, setError] = useState("");
       const [masked, setMasked] = useState("");
-      const [form, setForm] = useState({phone:"", name:"", title:"先生", email:"", code:""});
+      const [form, setForm] = useState({phone:(()=>{try{return localStorage.getItem(LAST_PHONE_KEY)||""}catch(e){return ""}})(), name:"", title:"先生", email:"", code:""});
       const set = (k,v) => setForm(f=>({...f,[k]:v}));
       const phoneValid = /^09\d{8}$/.test(form.phone);
       const setPhone = (v) => set("phone", String(v || "").replace(/\D/g,"").slice(0,10));
@@ -186,7 +229,7 @@
         try {
           const action = mode === "register" ? "verify_register" : "verify_login";
           const r = await api(action, {phone:form.phone,code:form.code});
-          localStorage.setItem(USER_TOKEN_KEY, r.sessionToken); onAuthed(r.user, r.sessionToken);
+          persistUserSession(r.sessionToken, r.user); onAuthed(r.user, r.sessionToken);
         } catch(e) { setError(e.message); } finally { setLoading(false); }
       }
 
@@ -198,6 +241,7 @@
             <button onClick={()=>{setMode("register");setStep("form");setError("")}} className={`flex-1 py-3 rounded-xl font-black ${mode==="register"?"bg-white shadow text-[#5B3F8C]":"text-slate-400"}`}>第一次建立帳號</button>
           </div>
           {error && <div className="mb-4"><Notice type="error">{error}</Notice></div>}
+          {step === "form" && mode === "login" && <div className="mb-4"><Notice><b>已註冊會員：</b>同一台手機／同一個瀏覽器只需驗證一次，之後會信任此裝置 1 年並自動登入。只有換裝置、清除瀏覽資料、主動登出或一年到期時，才會再次要求 Email 驗證。</Notice></div>}
           {step === "form" ? <div className="space-y-4">
             <div>
               <label className="text-sm font-bold text-slate-600">手機號碼</label>
@@ -221,7 +265,7 @@
               <div><label className="text-sm font-bold text-slate-600">稱謂</label><div className="grid grid-cols-2 gap-3 mt-2">{["先生","小姐"].map(t=><button type="button" key={t} onClick={()=>set("title",t)} className={`py-3 rounded-2xl border font-black ${form.title===t?"bg-violet-50 border-violet-300 text-[#5B3F8C]":"border-slate-200 text-slate-500"}`}>{t}</button>)}</div></div>
               <div><label className="text-sm font-bold text-slate-600">Email</label><input value={form.email} onChange={e=>set("email",e.target.value)} inputMode="email" placeholder="收據與入場券將寄到這裡" className="mt-1 w-full px-4 py-4 rounded-2xl border border-slate-200" /></div>
             </>}
-            <button disabled={!phoneValid || loading} onClick={sendCode} className={`w-full py-4 rounded-2xl text-white font-black text-lg shadow-lg transition ${phoneValid && !loading ? "bg-[#5B3F8C] active:scale-[.99]" : "bg-slate-300 cursor-not-allowed shadow-none"}`}>{mode==="register"?"建立帳號並寄驗證碼":"寄送登入驗證碼"}</button>
+            <button disabled={!phoneValid || loading} onClick={sendCode} className={`w-full py-4 rounded-2xl text-white font-black text-lg shadow-lg transition ${phoneValid && !loading ? "bg-[#5B3F8C] active:scale-[.99]" : "bg-slate-300 cursor-not-allowed shadow-none"}`}>{mode==="register"?"建立帳號並寄驗證碼":"寄送驗證碼（此裝置首次登入）"}</button>
           </div> : <div>
             <div className="text-center mb-5"><div className="text-lg font-black">請查看 Email</div><div className="text-sm text-slate-400 mt-1">驗證碼已寄至 {masked}</div></div>
             <input value={form.code} onChange={e=>set("code",e.target.value.replace(/\D/g,"").slice(0,6))} inputMode="numeric" placeholder="6 位數驗證碼" className="w-full text-center tracking-[.35em] text-2xl font-black px-4 py-4 rounded-2xl border border-slate-200" />
@@ -235,7 +279,7 @@
     function PaymentModal({order, config, onClose, onDone}) {
       const [form,setForm]=useState({transferDate:today(), amount:String(order.totalAmount||""), last5:order.prefillLast5 || order.payment?.last5 || ""});
       const [loading,setLoading]=useState(false); const [error,setError]=useState("");
-      const token=localStorage.getItem(USER_TOKEN_KEY);
+      const token=getStoredUserToken();
       async function submit(){
         setLoading(true);setError("");
         try{
@@ -272,7 +316,7 @@
       const [receiptTitle,setReceiptTitle]=useState(`${user.name}${user.title}`);
       const [identity,setIdentity]=useState(""); const [club,setClub]=useState(""); const [last5,setLast5]=useState("");
       const [paymentOrder,setPaymentOrder]=useState(null); const [loading,setLoading]=useState(false); const [error,setError]=useState("");
-      const token=localStorage.getItem(USER_TOKEN_KEY);
+      const token=getStoredUserToken();
       const total=qty*Number(config.ticketPrice||0);
       async function refresh(){
         setError("");
@@ -402,7 +446,7 @@
       const ticketToken=params.get("k");
       const adminMode=params.get("admin")==="1";
 
-      const storedToken = localStorage.getItem(USER_TOKEN_KEY);
+      const storedToken = getStoredUserToken();
       const cachedUser = storedToken ? readJson(USER_PROFILE_CACHE_KEY, null) : null;
       const cachedConfig = readJson(CONFIG_CACHE_KEY, null);
 
@@ -420,22 +464,24 @@
       }
 
       useEffect(()=>{refreshConfig()},[]);
+      useEffect(()=>{
+        if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
+      },[]);
 
       useEffect(()=>{
         if(ticketId||adminMode){setChecking(false);return;}
-        const t=localStorage.getItem(USER_TOKEN_KEY);
+        const t=getStoredUserToken();
         if(!t){setUser(null);setChecking(false);return;}
 
         // 同一支手機／同一瀏覽器會保留登入。短暫網路錯誤不再刪除登入憑證。
         apiWithRetry("session_me",{sessionToken:t},2)
           .then(r=>{
             setUser(r.user);
-            writeJson(USER_PROFILE_CACHE_KEY,r.user);
+            persistUserSession(t, r.user);
           })
           .catch(e=>{
             if(isSessionInvalidError(e.message)){
-              localStorage.removeItem(USER_TOKEN_KEY);
-              localStorage.removeItem(USER_PROFILE_CACHE_KEY);
+              clearUserSession();
               setUser(null);
             }
             // 非登入失效（例如 GAS 冷啟動、網路暫斷）時保留原登入，不要求重新收驗證碼。
@@ -445,16 +491,15 @@
 
       if(ticketId&&ticketToken)return <TicketPublic ticketId={ticketId} token={ticketToken} config={config}/>;
       if(adminMode)return <Admin config={config} onConfigChanged={refreshConfig}/>;
-      if(checking||!config)return <Loading text={storedToken ? "正在恢復您的登入..." : "資料載入中..."}/>;
-      if(!user)return <Auth config={config} onAuthed={(u)=>{
+      if(checking||!config)return <Loading text={storedToken ? "正在辨識這台已信任裝置..." : "資料載入中..."}/>;
+      if(!user)return <Auth config={config} onAuthed={(u, token)=>{
         setUser(u);
-        writeJson(USER_PROFILE_CACHE_KEY,u);
+        persistUserSession(token || getStoredUserToken(), u);
       }}/>;
       return <BuyerDashboard config={config} user={user} onLogout={()=>{
-        const t=localStorage.getItem(USER_TOKEN_KEY);
+        const t=getStoredUserToken();
         api("logout",{sessionToken:t}).catch(()=>{});
-        localStorage.removeItem(USER_TOKEN_KEY);
-        localStorage.removeItem(USER_PROFILE_CACHE_KEY);
+        clearUserSession();
         localStorage.removeItem(ORDERS_CACHE_PREFIX + user.userId);
         setUser(null);
       }}/>;
