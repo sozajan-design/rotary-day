@@ -9,6 +9,7 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
     html { font-size: 16px; }
     body { -webkit-tap-highlight-color: transparent; }
@@ -33,7 +34,7 @@
 
     // 若您沿用既有 GAS「管理部署 → 編輯 → 新版本」，Web App 網址不會改變。
     const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbwTBjHVnzYJW53_inuVIaMJ0JZYpChnKsHJQkAmTB9uvV8BQPBuVTcSxN67TycpDkt8/exec";
-    const APP_VERSION = "v1.5.5";
+    const APP_VERSION = "v1.6.0";
     const USER_TOKEN_KEY = "huimin_rotaryday_user_token";
     const ADMIN_TOKEN_KEY = "huimin_rotaryday_admin_token";
     const USER_PROFILE_CACHE_KEY = "huimin_rotaryday_user_profile";
@@ -255,7 +256,7 @@
       </Shell>;
     }
 
-    function Auth({config, onAuthed}) {
+    function LegacyAuth({config, onAuthed}) {
       const [mode, setMode] = useState("login");
       const [step, setStep] = useState("form"); // form | magic | otp
       const [loading, setLoading] = useState(false);
@@ -530,6 +531,160 @@
       </Shell>;
     }
 
+
+    function Auth({config, onAuthed}) {
+      const lineReady = !!(config?.lineLoginEnabled && config?.lineLiffId);
+      const [showLegacy,setShowLegacy]=useState(!lineReady);
+      const [stage,setStage]=useState("start"); // start | choose | bind | register | bindSent
+      const [loading,setLoading]=useState(false);
+      const [error,setError]=useState("");
+      const [lineToken,setLineToken]=useState("");
+      const [lineProfile,setLineProfile]=useState({displayName:"",email:""});
+      const [bindPhone,setBindPhone]=useState((()=>{try{return localStorage.getItem(LAST_PHONE_KEY)||""}catch(e){return ""}})());
+      const [maskedEmail,setMaskedEmail]=useState("");
+      const [reg,setReg]=useState({name:"",title:"先生",phone:"",email:""});
+      const LINE_PENDING_KEY="huimin_rotaryday_line_login_pending";
+
+      async function initLiff(){
+        if(!lineReady) throw new Error("LINE 登入尚未設定完成，請先使用 Email 備用登入");
+        if(!window.liff) throw new Error("LINE 登入元件載入失敗，請重新整理頁面");
+        await window.liff.init({liffId:config.lineLiffId});
+      }
+      async function completeLineLogin(){
+        setLoading(true);setError("");
+        try{
+          await initLiff();
+          if(!window.liff.isLoggedIn()) return;
+          const idToken=window.liff.getIDToken();
+          if(!idToken) throw new Error("沒有取得 LINE 登入資料，請重新按 LINE 登入");
+          const r=await api("line_auth",{idToken,sessionToken:getStoredUserToken()||""});
+          try{sessionStorage.removeItem(LINE_PENDING_KEY)}catch(e){}
+          if(r.status==="success"){
+            persistUserSession(r.sessionToken,r.user);
+            onAuthed(r.user,r.sessionToken);
+            return;
+          }
+          if(r.status==="unbound"){
+            setLineToken(idToken);
+            setLineProfile(r.lineProfile||{displayName:"",email:""});
+            setReg(x=>({...x,name:x.name||(r.lineProfile?.displayName||""),email:x.email||(r.lineProfile?.email||"")}));
+            setStage("choose");
+          }
+        }catch(e){setError(e.message||"LINE 登入失敗");}
+        finally{setLoading(false)}
+      }
+      async function startLineLogin(){
+        setLoading(true);setError("");
+        try{
+          await initLiff();
+          try{sessionStorage.setItem(LINE_PENDING_KEY,"1")}catch(e){}
+          if(!window.liff.isLoggedIn()){
+            window.liff.login({redirectUri:location.href});
+            return;
+          }
+          await completeLineLogin();
+        }catch(e){setError(e.message||"LINE 登入失敗");setLoading(false)}
+      }
+      useEffect(()=>{
+        if(!lineReady) return;
+        let pending=false;
+        try{pending=sessionStorage.getItem(LINE_PENDING_KEY)==="1"}catch(e){}
+        if(pending) completeLineLogin();
+      },[lineReady]);
+
+      async function bindExisting(){
+        const phone=String(bindPhone||"").replace(/\D/g,"").slice(0,10);
+        if(!/^09\d{8}$/.test(phone)){setError("請輸入原本扶輪日帳號使用的 10 碼手機號碼");return;}
+        setLoading(true);setError("");
+        try{
+          const r=await api("line_start_bind_existing",{idToken:lineToken,phone});
+          if(r.status==="success"){
+            persistUserSession(r.sessionToken,r.user);onAuthed(r.user,r.sessionToken);return;
+          }
+          setMaskedEmail(r.maskedEmail||"");
+          setStage("bindSent");
+        }catch(e){setError(e.message)}finally{setLoading(false)}
+      }
+      async function registerNew(){
+        const phone=String(reg.phone||"").replace(/\D/g,"").slice(0,10);
+        if(!reg.name.trim()){setError("請輸入姓名");return;}
+        if(!/^09\d{8}$/.test(phone)){setError("請輸入 09 開頭的 10 碼手機號碼");return;}
+        if(!/^\S+@\S+\.\S+$/.test(reg.email.trim())){setError("請輸入正確的 Email");return;}
+        setLoading(true);setError("");
+        try{
+          const r=await api("line_register_new",{idToken:lineToken,name:reg.name.trim(),title:reg.title,phone,email:reg.email.trim()});
+          if(r.status==="account_exists"){
+            setError(r.message||"系統找到既有帳號，請改用既有帳號綁定");
+            setBindPhone(phone);
+            setStage("bind");
+            return;
+          }
+          persistUserSession(r.sessionToken,r.user);onAuthed(r.user,r.sessionToken);
+        }catch(e){setError(e.message)}finally{setLoading(false)}
+      }
+
+      if(showLegacy) return <div>
+        <LegacyAuth config={config} onAuthed={onAuthed}/>
+        {lineReady&&<div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30"><button onClick={()=>{setShowLegacy(false);setStage("start");setError("")}} className="px-5 py-3 rounded-full bg-[#06C755] text-white font-black shadow-xl">改用 LINE 登入</button></div>}
+      </div>;
+
+      return <Shell config={config}>
+        {loading&&<Loading text="正在處理 LINE 登入..."/>}
+        <div className="bg-white rounded-[2rem] shadow-sm border border-slate-100 p-5 sm:p-6 soft-card">
+          {config?.loginPageNotice&&stage==="start"&&<div className="mb-5 rounded-[1.4rem] border border-violet-200 bg-violet-50 p-4 text-[15px] sm:text-sm font-bold leading-7 text-[#4F3B7C] whitespace-pre-wrap">{config.loginPageNotice}</div>}
+          {error&&<div className="mb-4"><Notice type="error">{error}</Notice></div>}
+
+          {stage==="start"&&<div className="text-center">
+            <div className="w-24 h-24 mx-auto rounded-[2rem] bg-[#06C755] text-white flex items-center justify-center text-3xl font-black shadow-lg">LINE</div>
+            <h2 className="mt-5 text-3xl font-black text-slate-900">使用 LINE 登入</h2>
+            <p className="mt-2 text-base text-slate-500 leading-7">已有帳號或第一次使用，都直接按下面的 LINE 登入即可。</p>
+            <button onClick={startLineLogin} className="w-full mt-6 py-5 rounded-3xl bg-[#06C755] text-white font-black text-xl shadow-lg active:scale-[.99]">使用 LINE 登入扶輪日系統</button>
+            <div className="mt-4 rounded-2xl bg-emerald-50 border border-emerald-200 p-4 text-left text-sm leading-7 text-emerald-800"><b>第一次綁定完成後：</b>以後直接用 LINE 就能進入完整帳號，不需要再到 Email 做登入驗證。原本的訂單、票券、收據資料都會保留。</div>
+            <div className="mt-7 pt-5 border-t"><button onClick={()=>setShowLegacy(true)} className="text-sm font-bold text-slate-400">沒有 LINE 或登入有問題？使用手機＋Email 備用登入</button></div>
+          </div>}
+
+          {stage==="choose"&&<div>
+            <div className="text-center"><div className="text-4xl">✅</div><h2 className="mt-3 text-2xl font-black">LINE 身分確認成功</h2>{lineProfile.displayName&&<div className="mt-2 text-slate-500">LINE：<b>{lineProfile.displayName}</b></div>}</div>
+            <div className="mt-6 text-center font-black text-lg">您之前用過扶輪日購票系統嗎？</div>
+            <div className="grid gap-3 mt-4">
+              <button onClick={()=>{setStage("bind");setError("")}} className="py-5 rounded-2xl bg-[#5B3F8C] text-white font-black text-xl">我之前已經有帳號</button>
+              <button onClick={()=>{setStage("register");setError("")}} className="py-5 rounded-2xl bg-violet-50 border-2 border-violet-200 text-[#5B3F8C] font-black text-xl">我是第一次使用</button>
+            </div>
+            <button onClick={()=>setStage("start")} className="w-full mt-4 py-3 text-slate-400 font-bold">返回</button>
+          </div>}
+
+          {stage==="bind"&&<div>
+            <h2 className="text-2xl font-black">綁定您原本的帳號</h2>
+            <p className="mt-2 text-sm leading-7 text-slate-500">請輸入以前在扶輪日系統使用的手機號碼。若這台裝置原本已登入，系統會直接綁定；否則只需要最後一次 Email 確認。</p>
+            <label className="block mt-5 font-bold text-slate-700">原本帳號的手機號碼</label>
+            <input value={bindPhone} onChange={e=>setBindPhone(e.target.value.replace(/\D/g,"").slice(0,10))} inputMode="numeric" maxLength={10} placeholder="0912345678" className="w-full mt-2 px-5 py-5 rounded-3xl border-2 border-violet-200 text-2xl font-black tracking-wide"/>
+            <button onClick={bindExisting} className="w-full mt-5 py-5 rounded-3xl bg-[#06C755] text-white font-black text-xl">確認並綁定 LINE 帳號</button>
+            <button onClick={()=>setStage("choose")} className="w-full mt-3 py-3 text-slate-400 font-bold">返回</button>
+          </div>}
+
+          {stage==="bindSent"&&<div className="text-center">
+            <div className="text-5xl">✉️</div><h2 className="mt-4 text-2xl font-black">最後一次 Email 確認</h2>
+            <p className="mt-3 text-base leading-7 text-slate-600">確認信已寄到 <b>{maskedEmail}</b>。請點信件裡的「確認綁定 LINE 帳號」。</p>
+            <div className="mt-4 rounded-2xl bg-emerald-50 border border-emerald-200 p-4 text-emerald-800 font-bold leading-7">完成這一次後，以後就直接使用 LINE 登入，不需要再做 Email 登入驗證。</div>
+            <button onClick={()=>setStage("bind")} className="w-full mt-5 py-3 text-slate-400 font-bold">返回重新輸入手機</button>
+          </div>}
+
+          {stage==="register"&&<div>
+            <h2 className="text-2xl font-black">第一次建立扶輪日帳號</h2>
+            <p className="mt-2 text-sm text-slate-500 leading-7">LINE 已經完成您的登入身分確認。以下資料仍保留，供聯絡、電子收據與票券寄送使用。</p>
+            <div className="space-y-4 mt-5">
+              <div><label className="font-bold text-slate-700">姓名</label><input value={reg.name} onChange={e=>setReg({...reg,name:e.target.value})} className="w-full mt-1 p-4 rounded-2xl border-2"/></div>
+              <div><label className="font-bold text-slate-700">稱謂</label><div className="grid grid-cols-2 gap-3 mt-2">{["先生","小姐"].map(t=><button type="button" key={t} onClick={()=>setReg({...reg,title:t})} className={`py-4 rounded-2xl border-2 font-black ${reg.title===t?"bg-violet-50 border-violet-300 text-[#5B3F8C]":"border-slate-200 text-slate-500"}`}>{t}</button>)}</div></div>
+              <div><label className="font-bold text-slate-700">手機號碼</label><input value={reg.phone} onChange={e=>setReg({...reg,phone:e.target.value.replace(/\D/g,"").slice(0,10)})} inputMode="numeric" maxLength={10} placeholder="0912345678" className="w-full mt-1 p-4 rounded-2xl border-2 text-xl font-black"/></div>
+              <div><label className="font-bold text-slate-700">Email</label><input value={reg.email} onChange={e=>setReg({...reg,email:e.target.value})} inputMode="email" placeholder="收據與票券將寄到這裡" className="w-full mt-1 p-4 rounded-2xl border-2"/></div>
+            </div>
+            <button onClick={registerNew} className="w-full mt-5 py-5 rounded-3xl bg-[#06C755] text-white font-black text-xl">完成建立帳號</button>
+            <button onClick={()=>setStage("choose")} className="w-full mt-3 py-3 text-slate-400 font-bold">返回</button>
+          </div>}
+        </div>
+      </Shell>;
+    }
+
     function PaymentModal({order, config, onClose, onDone}) {
       const [form,setForm]=useState({transferDate:today(), amount:String(order.totalAmount||""), last5:order.prefillLast5 || order.payment?.last5 || ""});
       const [loading,setLoading]=useState(false); const [error,setError]=useState("");
@@ -564,7 +719,7 @@
       </div>;
     }
 
-    function BuyerDashboard({config,user,onLogout,focusOrderId}) {
+    function BuyerDashboard({config,user,onLogout,focusOrderId,onUserUpdated}) {
       const ordersCacheKey = ORDERS_CACHE_PREFIX + user.userId;
       const [orders,setOrders]=useState(()=>readJson(ordersCacheKey, [])); const [qty,setQty]=useState(1);
       const defaultReceiptTitle=`${user.name}${user.title}`;
@@ -574,6 +729,44 @@
       const [paymentOrder,setPaymentOrder]=useState(null); const [createdOrder,setCreatedOrder]=useState(null); const [loading,setLoading]=useState(false); const [error,setError]=useState("");
       const token=getStoredUserToken();
       const total=qty*Number(config.ticketPrice||0);
+      const [lineBindLoading,setLineBindLoading]=useState(false);
+      const [lineBindError,setLineBindError]=useState("");
+      const LINE_LINK_PENDING_KEY="huimin_rotaryday_line_link_existing_pending";
+      async function completeCurrentLineBind(){
+        if(!(config?.lineLoginEnabled&&config?.lineLiffId) || user.lineLinked) return;
+        setLineBindLoading(true);setLineBindError("");
+        try{
+          if(!window.liff) throw new Error("LINE 登入元件載入失敗，請重新整理");
+          await window.liff.init({liffId:config.lineLiffId});
+          if(!window.liff.isLoggedIn()) return;
+          const idToken=window.liff.getIDToken();
+          if(!idToken) throw new Error("沒有取得 LINE 登入資料");
+          const r=await api("line_auth",{idToken,sessionToken:token});
+          try{sessionStorage.removeItem(LINE_LINK_PENDING_KEY)}catch(e){}
+          if(r.status!=="success") throw new Error("目前無法直接綁定 LINE，請登出後使用 LINE 登入再選擇既有帳號");
+          persistUserSession(r.sessionToken||token,r.user);
+          onUserUpdated?.(r.user);
+          alert("✅ LINE 帳號綁定完成！以後可以直接用 LINE 登入。");
+        }catch(e){setLineBindError(e.message)}finally{setLineBindLoading(false)}
+      }
+      async function bindCurrentLine(){
+        setLineBindLoading(true);setLineBindError("");
+        try{
+          if(!window.liff) throw new Error("LINE 登入元件載入失敗，請重新整理");
+          await window.liff.init({liffId:config.lineLiffId});
+          try{sessionStorage.setItem(LINE_LINK_PENDING_KEY,"1")}catch(e){}
+          if(!window.liff.isLoggedIn()){
+            window.liff.login({redirectUri:location.href});
+            return;
+          }
+          await completeCurrentLineBind();
+        }catch(e){setLineBindError(e.message);setLineBindLoading(false)}
+      }
+      useEffect(()=>{
+        if(user.lineLinked || !(config?.lineLoginEnabled&&config?.lineLiffId)) return;
+        let pending=false;try{pending=sessionStorage.getItem(LINE_LINK_PENDING_KEY)==="1"}catch(e){}
+        if(pending) completeCurrentLineBind();
+      },[user.lineLinked,config?.lineLoginEnabled,config?.lineLiffId]);
       async function refresh(){
         setError("");
         try{
@@ -699,6 +892,14 @@
           </div>
         </div>}
         <div className="flex justify-between items-center mb-5"><div><div className="text-sm text-slate-400">歡迎回來</div><div className="font-black text-2xl sm:text-lg">{user.name}{user.title}</div></div><button onClick={onLogout} className="px-4 py-3 rounded-2xl border bg-white text-base sm:text-sm font-bold text-slate-500">登出</button></div>
+        {lineBindLoading&&<Loading text="正在綁定 LINE 帳號..."/>}
+        {!user.lineLinked&&config?.lineLoginEnabled&&config?.lineLiffId&&<div className="mb-4 rounded-[1.6rem] border-2 border-emerald-200 bg-emerald-50 p-5">
+          <div className="text-lg font-black text-emerald-800">LINE 快速登入已開放</div>
+          <div className="mt-2 text-sm leading-6 text-emerald-700">您目前是既有會員。現在綁定一次 LINE，以後就可以直接用 LINE 登入，不需要再到 Email 做登入驗證；原本訂單與票券完全不會改變。</div>
+          {lineBindError&&<div className="mt-3 text-sm font-bold text-rose-600">{lineBindError}</div>}
+          <button onClick={bindCurrentLine} className="w-full mt-4 py-4 rounded-2xl bg-[#06C755] text-white font-black text-lg">立即綁定我的 LINE 帳號</button>
+        </div>}
+        {user.lineLinked&&<div className="mb-4 rounded-2xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-sm font-black text-emerald-700">✓ 已綁定 LINE 帳號{user.lineDisplayName?`：${user.lineDisplayName}`:""}，下次可直接使用 LINE 登入。</div>}
         {error&&<div className="mb-4"><Notice type="error">{error}</Notice></div>}
         {orders.some(o=>o.status==="WAITING_PAYMENT")&&<div className="mb-4 rounded-[1.6rem] border-2 border-orange-200 bg-orange-50 p-5">
           <div className="text-lg font-black text-orange-700">⚠️ 您有 {orders.filter(o=>o.status==="WAITING_PAYMENT").length} 筆訂單尚未完成付款回報</div>
@@ -808,6 +1009,16 @@
           {textarea("登入／註冊首頁公告文字","loginPageNotice",{rows:5,placeholder:"例如：完成匯款後，請務必回到系統按「我已完成匯款，通知執秘」。"})}
           <div>{field("未回報匯款提醒時數","paymentReminderHours",{type:"number"})}<div className="text-xs text-slate-400 mt-1">例如 24 = 訂單建立 24 小時後仍未回報匯款，系統會寄一次提醒信；設為 0 可停用。</div></div>
         </div>
+        <h4 className="font-black mt-7 mb-3 text-[#06C755]">LINE 登入設定</h4>
+        <div className="rounded-2xl bg-emerald-50 border border-emerald-200 p-4 mb-4 text-sm leading-7 text-emerald-800">
+          <label className="flex items-center gap-3 font-black text-base"><input type="checkbox" checked={!!form.lineLoginEnabled} onChange={e=>set("lineLoginEnabled",e.target.checked)} className="w-5 h-5 accent-[#06C755]"/> 啟用 LINE Login</label>
+          <div className="mt-2">LINE 登入只取代「登入驗證」；購票、匯款、電子收據、QR 票券、票券分配、執秘核帳與現場報到功能全部保留。</div>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-4">
+          {field("LINE LIFF ID","lineLiffId",{placeholder:"例如：1234567890-AbCdEfGh"})}
+          {field("LINE Login Channel ID","lineChannelId",{placeholder:"例如：1234567890"})}
+        </div>
+        <div className="text-xs text-slate-400 mt-2">請在 LINE Developers 建立 LINE Login Channel 與 LIFF App，Endpoint URL 設為目前扶輪日 GitHub Pages 網址；至少開啟 openid、profile scope。系統不需要把 Channel Secret 放到前端。</div>
         <h4 className="font-black mt-7 mb-3 text-[#5B3F8C]">通知與系統</h4>
         <div className="grid sm:grid-cols-2 gap-4">{field("執秘 Email","secretaryEmail",{type:"email"})}{field("其他通知 Email","notifyEmails",{placeholder:"多筆可用逗號分隔"})}<div className="sm:col-span-2">{field("前端網址","frontendUrl")}</div><div><label className="text-sm sm:text-xs font-bold text-slate-600">電子收據流水號</label><div className="w-full mt-1 p-4 rounded-2xl border-2 border-slate-100 bg-slate-50 font-black text-[#5B3F8C]">E0001、E0002、E0003…（固定 E 開頭）</div></div>{field("寄件顯示名稱","mailSenderName")}<div className="sm:col-span-2">{field("電子收據第一聯雲端資料夾 ID","receiptFolderId")}</div><div className="sm:col-span-2"><div className="text-xs text-slate-400 -mt-2">執秘確認收款後，第一聯存根 PDF 會自動保存到此 Google Drive 資料夾；第二聯 PDF 會寄給捐款人。</div></div><div className="sm:col-span-2">{field("更換管理密碼（不修改請留白）","newAdminPassword",{type:"password"})}</div></div>
         <button onClick={save} className="w-full mt-6 py-4 rounded-2xl bg-[#5B3F8C] text-white font-black text-lg">儲存全部設定</button>
@@ -877,7 +1088,7 @@
           const r=await apiWithRetry("get_config",{},1);
           setConfig(r.data); writeJson(CONFIG_CACHE_KEY,r.data);
         }catch(e){
-          if(!config) setConfig({eventName:"臺中惠民扶輪社 扶輪日",ticketTitle:"扶輪日入場券",ticketPrice:0,maxTicketsPerOrder:20,salesOpen:true,eventIntroTitle:"",eventIntro:""});
+          if(!config) setConfig({eventName:"臺中惠民扶輪社 扶輪日",ticketTitle:"扶輪日入場券",ticketPrice:0,maxTicketsPerOrder:20,salesOpen:true,eventIntroTitle:"",eventIntro:"",lineLoginEnabled:false,lineLiffId:""});
         }
       }
 
@@ -1001,7 +1212,7 @@
         setUser(u);
         persistUserSession(token || getStoredUserToken(), u);
       }}/>;
-      return <BuyerDashboard config={config} user={user} focusOrderId={manageMode?manageOrderId:""} onLogout={()=>{
+      return <BuyerDashboard config={config} user={user} focusOrderId={manageMode?manageOrderId:""} onUserUpdated={(u)=>{setUser(u);writeJson(USER_PROFILE_CACHE_KEY,u)}} onLogout={()=>{
         const t=getStoredUserToken();
         api("logout",{sessionToken:t}).catch(()=>{});
         clearUserSession();
